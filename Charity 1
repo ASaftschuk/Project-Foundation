@@ -1,0 +1,988 @@
+---
+title: "MA429_MockGroupProject"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE, echo=TRUE}
+setwd("~/LSE/MA429_AlgorithmsForDataMining/MA429_MockGroupProject")
+```
+
+# 1. Installing & Loading Packages
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#install.packages("dplyr")      #data manipulation
+#install.packages("reshape2")   #reshaping data
+#install.packages("ggplot2")    #plotting graphs
+#install.packages("scales")     #adjusting scales in plots
+#install.packages("Amelia")     #mapping missing values 
+#install.packages("caret")      #building models
+#install.packages("DMwR")       #smote implementation
+#install.packages("purrr")      #functional programming (map)
+#install.packages("pROC")       #aUC calculations
+#install.packages("PRROC")      #precision-Recall curve calculations
+#install.packages("class")      #classifcation fucntions
+#install.packages("Hmisc")      #correlation Matrix 
+#install.packages("corrplot")   #plotting correlations
+#install.packages("sjPlot")     #tuning k with elbow method
+#install.packages("MLmetrics")  #machine learning metrics 
+
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(scales)
+library(Amelia)
+library(caret)
+library(DMwR)
+library(pROC)
+library(purrr)
+library(PRROC)
+library(class)
+library(Hmisc)
+library(corrplot)
+library(sjPlot)
+library(MLmetrics)
+```
+
+# 2. Training Data
+
+## 2.1 Loading the data set & tuned model 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ds_train_raw <- read.table("adult.data.txt", sep =",", header = FALSE, na.strings = " ?")
+#load("~/LSE/MA429_AlgorithmsForDataMining/MA429_MockGroupProject/MA429_Mock_Project_Gkikizas-Lampropoulos_Niu_Saftschuk/MA429_MockGroupProject_GlobalEnvironment_TunedModels.RData")
+```
+
+## 2.2 Data Preprocessing - Training Data
+
+### 2.2.1 Renaming column labels
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+colnames(ds_train_raw)<-c("age", "workclass", "fnlwgt", "education", "education.num", "marital.status", "occupation", "relationship", "race", "sex", "capital.gain", "capital.loss", "hours.perweek", "native.country","income")
+
+summary(ds_train_raw)
+```
+
+### 2.2.2 Formatting missing values & dropping unnecessary variables
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#Percentages of missing values withinf features 
+sapply(ds_train_raw, function(x) (sum(is.na(x))/nrow(ds_train_raw))) #summing missing values
+
+#plotting missing values
+y.labels <- rep("",nrow(ds_train_raw))
+y.at <- c(1:nrow(ds_train_raw))
+missmap(ds_train_raw, col=c("red", "grey"), y.labels = y.labels, y.at = y.at)
+
+ds_train_raw <- na.omit(ds_train_raw) #omitting missing values
+row.names(ds_train_raw) <- 1:nrow(ds_train_raw) #reformatting the row order 
+ds_train_raw$fnlwgt <- NULL #just some weighting https://web.cs.wpi.edu/~cs4341/C00/Projects/fnlwgt
+```
+
+### 2.2.3 Log-transform skewed variables & normalize numeric variables
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+attach(ds_train_raw)
+
+#check the type of variables
+sapply(ds_train_raw, class)
+
+
+
+#draw histograms to find skewed data
+par(mfrow=c(1,3), margin(1,1,1,1))
+hist(age) #slightly skwed to the right 
+hist(education.num) #seems normal
+hist(hours.perweek)
+par(mfrow=c(1,2))
+hist(capital.gain) #severely skewed to the right 
+hist(capital.loss) #severely skewed to the righ 
+par(mfrow=c(1,1))
+
+#take log of highly skewed data
+ds_train_log <- ds_train_raw
+ds_train_log$log_capital.gain <- log(capital.gain + 1) #add one in both cases since log of 0 is not defined
+ds_train_log$log_capital.loss <- log(capital.loss + 1) #here the same as in the line above
+ds_train_log$capital.gain <- NULL
+ds_train_log$capital.loss <- NULL
+
+par(mfrow=c(1,2),mar=c(4,4,4,4))
+hist(ds_train_log$log_capital.gain)
+hist(ds_train_log$log_capital.loss)
+par(mfrow=c(1,1))
+
+#normalization
+numeric_var <- c("age", "education.num", "log_capital.gain", "log_capital.loss", "hours.perweek")
+ds_train_norm <- ds_train_log %>% mutate_at((vars(numeric_var)), scale) 
+#same scale
+
+detach(ds_train_raw)
+```
+
+### 2.2.4 Dummy variables one-hot encoding and income factorization 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+attach(ds_train_raw)
+
+#factorization
+factor_var <- c("workclass", "education", "marital.status", "occupation", "relationship", "race", "sex", "native.country")
+ds_train_fact <- ds_train_log %>% mutate_at(vars(factor_var), as.factor)
+
+#check levels of factor variables
+sapply(ds_train_fact, levels)
+
+#checking the counts for native.country variable
+ggplot(ds_train_fact, aes(x = native.country)) +  
+        geom_bar(aes(y = (..count..)/sum(..count..))) + 
+        scale_y_continuous(labels=percent, limits = c(0,1), breaks = seq(0,1,0.1)) +
+        theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+        labs(title="Observation per Country", x = "Country", y = "Percent") 
+
+
+#renaming all countries which are not US into "Other" since the US accounts for over 90% 
+ds_train_fact$native.country <- recode(native.country, " United-States" = "United-States", .default = "Other")
+
+#combining normalized numeric and factorized character variables
+ds_train_comb <- as.data.frame(c(1:nrow(ds_train_norm)))
+
+for (i in numeric_var) {
+      col1 <- colnames(ds_train_norm[i])
+      ds_train_comb <- cbind(ds_train_comb,ds_train_norm[,col1])
+}
+
+for (i in factor_var) {
+      col2 <- colnames(ds_train_fact[i])
+      ds_train_comb <- cbind(ds_train_comb,ds_train_fact[,col2])
+  }
+
+#binding income into the dataframe
+ds_train_comb <- cbind(ds_train_comb,income)
+
+#converting factorial variables to dummy variables by one-hot encoding
+x <- model.matrix(income~., ds_train_comb[,-nrow(ds_train_comb)]) 
+
+#finalizing pre-processing of the training data set 
+ds_train_ready <- as.data.frame(x) 
+ds_train_ready[,1:2] <- NULL
+ds_train_ready <- cbind(ds_train_ready,income)
+colnames(ds_train_ready)[1:5] <- numeric_var
+training_data <- ds_train_ready
+
+detach(ds_train_raw)
+```
+
+### 2.2.5 Exploratory Data Analysis 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#Pay attention to which dataset used!!!
+
+#dimensions of the data
+dim(training_data)
+
+#min-max summary of the data
+summary(training_data[,c(1:5, ncol(training_data))])
+str(training_data)
+
+#correlation for numeric variables
+#checking the signficance level at 0.01 percent with pearson correlation significance; crosses for anything that is not signficiant
+training_ds_cor <- rcorr(as.matrix(training_data[,c(1:5)], type = "spearman"))
+training_ds_cor_r <- as.matrix(training_ds_cor$r)
+training_ds_cor_P <- as.matrix(training_ds_cor$P)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+training_cor_plot <- corrplot(training_ds_cor_r, title = "Correlation Plot of Numeric Variables", method="color", col=col(200),  
+            type="upper", order="hclust", 
+            addCoef.col = "black", # Add coefficient of correlation
+            tl.col="black", tl.srt=45, #Text label color and rotation
+            # Combine with significance
+            p.mat = training_ds_cor_P, sig.level = 0.01, insig = "pch", 
+            # hide correlation coefficient on the principal diagonal
+            diag=TRUE 
+            )
+#all of them are significant, but the correlation is very small. this means that we have evidence for light correlation btw the features
+#Why we are using spearman: because most of our variables are continuous and not ordinal(http://support.minitab.com/en-us/minitab-express/1/help-and-how-to/modeling-statistics/regression/supporting-topics/basics/a-comparison-of-the-pearson-and-spearman-correlation-methods/)
+
+#numeric variables exploration
+par(mfrow=c(1,3))
+income_age_boxplot <- boxplot(age ~ income, data = ds_train_raw, xlab = "Income Bracket", ylab = "Age", main = "Income vs Age")
+income_education.num_boxplot <- boxplot(education.num ~ income, data = ds_train_raw, xlab = "Income Bracket", ylab = "Years of Education", main = "income vs education.num")
+income_hours.perweek_boxplot <- boxplot(hours.perweek ~ income, data = ds_train_raw, xlab = "Income Bracket",  ylab = "Hours per Week", main = "income vs hours.perweek")
+par(mfrow=c(1,2))
+income_capital.gain_boxplot <- boxplot(capital.gain ~ income, data = ds_train_raw, xlab = "Income Bracket", ylab = "Capital Gain", main = "income vs capital.gain")
+income_capital.loss_boxplot <- boxplot(capital.loss ~ income, data = ds_train_raw, xlab = "Income Bracket", ylab = "Capital Loss", main = "income vs capital.loss")
+#as we can see form the boxplot, taking the log for capital.loss and gain makese sense 
+par(mfrow=c(1,1))
+
+par(mfrow = c(2,4))
+#categorical variable exploration 
+training_income_workclass <- ggplot(ds_train_raw, aes(workclass, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+        labs(title="Income Class vs Work Class") 
+training_income_education <- ggplot(ds_train_raw, aes(education, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Education") 
+training_income_marital.status <- ggplot(ds_train_raw, aes(marital.status, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Marital Status") 
+training_income_occupation <- ggplot(ds_train_raw, aes(occupation, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Occupation") 
+training_income_relationship <- ggplot(ds_train_raw, aes(relationship, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Relationship") 
+training_income_race <- ggplot(ds_train_raw, aes(race, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Race") 
+training_income_sex <- ggplot(ds_train_raw, aes(sex, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Sex") 
+
+training_income_workclass
+training_income_education
+training_income_marital.status
+training_income_occupation
+training_income_relationship
+training_income_race
+training_income_sex
+
+par(mfrow=c(1,1))
+```
+
+### 2.2.6 Creating syntactically correct labels for factor variables in order for caret package to work 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#Syntactically correct labels for factor varaibles 
+feature.names=names(training_data)
+for (f in feature.names) {
+  if (class(training_data[[f]])=="factor") {
+    levels <- unique(c(training_data[[f]]))
+    training_data[[f]] <- factor(training_data[[f]],
+                   labels=make.names(levels))
+  }
+}
+
+rm(f, feature.names)
+```
+
+### 2.2.7  Training - Testing Split for Training Data 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#Splitting the data in 80% training and 20% testing
+set.seed(1)  
+sample <- sample.int(n = nrow(training_data), size = floor(.8*nrow(training_data)), replace = F)
+train <- training_data[sample, ]
+test  <- training_data[-sample, ]
+
+#checking distribution of original and partitioned data for data imbalances
+prop_training_data <- prop.table(table(training_data$income))
+prop_train_partition <- prop.table(table(train$income))
+prop_test_partition <- prop.table(table(test$income))
+
+par(mfrow=c(1,3))
+
+imbalances_training_data <- barplot(prop_training_data, main="Data Imbalances - Training Data", xlab = "Income Category", names.arg = c("<=50K", ">50K"), ylab = "Proportion of Observations", ylim = c(0,0.8))
+axis(2, at = seq(0, 80, 5), las = 2)
+imbalances_train_partition <- barplot(prop_training_data, main="Data Imbalances - Train Partition", xlab = "Income Category", names.arg = c("<=50K", ">50K"), ylab = "Proportion of Observations", ylim = c(0,0.8) ) 
+imbalances_test_partition <- barplot(prop_training_data, main="Data Imbalances - Test Partition", xlab = "Income Category", names.arg = c("<=50K", ">50K"), ylab = "Proportion of Observations", ylim = c(0,0.8) )
+
+par(mfrow=c(1,1))
+
+#this tells us that if just randomply guessing that a person is earning below 75% every single time, we would be guessingl accurately 75% of the time. since income is not distributed 50-50, we need to use Kappa ratio as a better accuracy measurement
+#Explanations of confusion matrix: (https://stats.stackexchange.com/questions/82162/cohens-kappa-in-plain-english)
+#                                   http://www.dataschool.io/simple-guide-to-confusion-matrix-terminology/
+#this indicates that accuracy might not be the best measurement for the performance of our data 
+
+#removing unneccessary data from the Global Environment
+rm(sample, prop_training_data, prop_train_partition, prop_test_partition)
+```
+
+### 2.2.8 Removing unneccessary data 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+rm(ds_train_raw, ds_train_log, ds_train_fact, ds_train_norm, ds_train_comb, ds_train_ready, x, col1, col2, factor_var, numeric_var, i, y.at, y.labels)
+```
+
+# 3. Algorithms applied to Training Data
+
+We start with simple algorithms, such as logist regression and kNN, and continue to the more complex ones, such as Random Forests and SVM. We skip regular Decision Trees since RF are a more powerful method of the tree-based algorithms, and we hence would expect superior performance. 
+
+We train on a subset of the training data and then predict on the rest of the training data. The performance of the algorithms is evlauated based on the computational efficiency which is measured by the running time, the accuracy measured by the confusion matrix, and the AUC-curve.  
+
+## 3.1 Prior specifications in order for algorithms to be comparable 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+seed <- 1
+
+metric <- c("Kappa")
+
+#Tuning the models hyperparameter  
+control = trainControl(method = "repeatedcv", number = 10, repeats = 3, summaryFunction = twoClassSummary, selectionFunction = "best", classProbs = TRUE)
+#Tuning uses AUC curve (twoClassSummary) to pick best model and goes through the processes of repeated cross-validation on the training set, repeating 1 time with 10-folds used in each repeat. Increasing number of repeats would force the model to learn slower which should improve the model's performance. However due to the lack of computational power of our computers we leave repeats at 1. 
+#in case you want to reduce the running time, set control: trainControl(..., type = "none", ...)
+
+#additional tuning for svm 
+svm_tunegrid <- expand.grid(sigma = 2^c(-5,-3,-1,0,1,3,5), C=2^c(-15,-13,-10,-7,-4,-1,0,1,4,7,10,15))
+#Setting the tuning parameter https://www.csie.ntu.edu.tw/~cjlin/papers/guide/guide.pdf
+```
+
+## 3.2 Logistic Regression
+
+### 3.2.1 Training & Predicting
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(seed)
+
+#training the model
+#start_time = Sys.time()
+#lgr_model <- train(as.factor(income)~.,data=train, method="glm", family=binomial(), metric = metric, trControl = control)
+#end_time = Sys.time()
+#rank defficiency error stems most likely from collinearity between factor variables 
+
+#summary stats of model 
+lgr_model
+summary(lgr_model)
+#no tuning parameters for this model
+
+#predicting clases and probabilities 
+training_lgr_predict_class <- predict(lgr_model, newdata = test, classprobs = TRUE)
+training_lgr_predict_prob <- predict(lgr_model, newdata = test, type = "prob")
+
+```
+
+### 3.2.2 Performance Evaluation
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#time to train logistic regression model
+#lgr_train_time <- print(end_time - start_time)
+
+#AUC and ROC curve 
+training_lgr_ROC <- roc(predictor = training_lgr_predict_prob$X2, response = test$income, levels = rev(levels(test$income)))
+training_lgr_AUC <- as.numeric(training_lgr_ROC$auc) 
+training_lgr_AUC
+training_lgr_ROC_curve <- plot(training_lgr_ROC, main="Logistic Regression - Training ROC Curve")
+training_lgr_ROC_curve
+
+#confusion matrix, accuracy kappa, precision, recall & F1 
+training_lgr_CM <- confusionMatrix(training_lgr_predict_class, test$income, positive = "X2",mode = "prec_recall")
+training_lgr_CM
+#Explain which are more relevant to look at due to our skewed data; interpretation is in https://topepo.github.io/caret/measuring-performance.html
+```
+
+## 3.3 LDA
+
+### 3.3.1 Training & Predicting 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#removing variable 7 due to collinearity (error message from LDA)
+lda_train <- train[,-7]
+lda_test <- test[,-7]
+
+set.seed(seed)
+
+#training the model
+#start_time = Sys.time()
+#lda_model <- train(as.factor(income)~.,data=lda_train, method="lda", metric = metric, trControl = control)
+#end_time = Sys.time()
+#no tuning parameters for this model
+
+training_lda_predict_class <- predict(lda_model, newdata = lda_test, classprobs = TRUE)
+training_lda_predict_prob <- predict(lda_model, newdata = lda_test, type = "prob")
+#Usually LDA is not performed with categorical data, but it seems to be robust which is an interesting finding, and thus we leave it in 
+```
+
+### 3.3.2 Performance Evaluation
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#time to train kNN model
+#lda_train_time <- print(end_time - start_time)
+
+#AUC and ROC curve 
+training_lda_ROC <- roc(predictor = training_lda_predict_prob$X2, response = test$income, levels = rev(levels(test$income)))
+training_lda_AUC <- as.numeric(training_lda_ROC$auc) 
+training_lda_AUC
+training_lda_ROC_curve <- plot(training_lda_ROC, main="LDA - Training ROC Curve")
+
+#confusion matrix, accuracy, kappa, precision, recall & F1 
+training_lda_CM <- confusionMatrix(training_lda_predict_class, test$income, positive = "X2", mode = "prec_recall")
+training_lda_CM
+#Explain which are more relevant to look at due to our imbalanced data; interpretation is in https://topepo.github.io/caret/measuring-performance.html
+```
+
+## 3.4 K-Nearest Neighbors
+
+### 3.4.1 Training & Predicting 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#tuning k-parameter: 
+#sjc.elbow(train[,-58], steps = 50, show.diff = FALSE)
+#Explanation: https://discuss.analyticsvidhya.com/t/how-to-choose-the-value-of-k-in-knn-algorithm/2606/3
+#using the elbow method we select the k=8, since afterwards performance drops off. select 9 so it is a odd number and there are no ties. however with the train function we find a better k, so we use that instead.
+
+set.seed(seed)
+
+#train the model 
+#start_time = Sys.time()
+#kNN_model <- train(income ~ ., data = train, method = "knn", trControl = control, metric = metric, tuneLength = 20, verbose = TRUE)
+#end_time = Sys.time()
+
+kNN_model
+plot(kNN_model)
+#Based on ROC tuning k should be seelcted at k=41
+#Based on Elbow method k should be selected at k=9 (8 but 9 is an odd number)
+
+training_kNN_predict_class <- predict(kNN_model, newdata = test, classprobs = TRUE)
+training_kNN_predict_prob <- predict(kNN_model, newdata = test, type = "prob")
+
+```
+
+### 3.4.2 Performance Evaluation
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#time to train kNN model
+#kNN_train_time <- print(end_time - start_time)
+
+#AUC and ROC curve 
+training_kNN_ROC <- roc(predictor = training_kNN_predict_prob$X2, response = test$income, levels = rev(levels(test$income)))
+training_kNN_AUC <- as.numeric(training_kNN_ROC$auc) 
+training_kNN_AUC
+training_kNN_ROC_curve <- plot(training_kNN_ROC, main="k-Nearest Neighbors - Training ROC Curve")
+
+#confusion matrix, accuracy, kappa, precision, recall & F1 
+training_kNN_CM <- confusionMatrix(training_kNN_predict_class, test$income, positive = "X2", mode = "prec_recall")
+training_kNN_CM
+#Explain which are more relevant to look at due to our imbalanced data; interpretation is in https://topepo.github.io/caret/measuring-performance.html
+```
+
+## 3.5 Support-Vector Machines
+
+### 3.5.1 Training & Predicting - Linear Kernel 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(seed)
+
+#train the model 
+#start_time = Sys.time()
+#svm_l_model <- train(as.factor(income)~.,data=train, method="svmLinear", metric = metric, trControl = control, tunegrid = svm_tunegrid)
+#end_time = Sys.time()
+
+svm_l_model
+
+training_svm_l_predict_class <- predict(svm_l_model, newdata = test, classprobs = TRUE)
+training_svm_l_predict_prob <- predict(svm_l_model, newdata = test, type = "prob")
+```
+
+### 3.5.2 Performance Evaluation - Linear Kernel 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#time to train kNN model
+#svm_l_train_time <- print(end_time - start_time)
+
+#AUC and ROC curve 
+training_svm_l_ROC <- roc(predictor = training_svm_l_predict_prob$X2, response = test$income, levels = rev(levels(test$income)))
+training_svm_l_AUC <- as.numeric(training_svm_l_ROC$auc) 
+training_svm_l_AUC
+training_svm_l_ROC_curve <- plot(training_svm_l_ROC, main="Random Forest - Training ROC Curve")
+
+#confusion matrix, accuracy, kappa, precision, recall & F1 
+training_svm_l_CM <- confusionMatrix(training_svm_l_predict_class, test$income, positive = "X2", mode = "prec_recall")
+training_svm_l_CM
+#Explain which are more relevant to look at due to our imbalanced data; interpretation is in https://topepo.github.io/caret/measuring-performance.html
+```
+
+### 3.5.3 Training & Predicting - Radial Kernel 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(seed)
+
+#train the model 
+#start_time = Sys.time()
+#svm_r_model <- train(as.factor(income)~.,data=train, method="svmRadial", metric = metric, trControl = control, tunegrid = svm_tunegrid)
+#end_time = Sys.time()
+#svm_r_train_time <- print(end_time - start_time)
+
+svm_r_model
+plot(svm_r_model)
+#two tuning parameters for rf: mtry (number of variables considered) and ntree (number of trees grown); we focus on tuning only on mtry 
+
+training_svm_r_predict_class <- predict(svm_r_model, newdata = test, classprobs = TRUE)
+training_svm_r_predict_prob <- predict(svm_r_model, newdata = test, type = "prob")
+```
+
+### 3.5.4 Performance Evaluation - Radial Kernel 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#time to train kNN model
+#svm_r_train_time <- print(end_time - start_time)
+
+#AUC and ROC curve 
+training_svm_r_ROC <- roc(predictor = training_svm_r_predict_prob$X2, response = test$income, levels = rev(levels(test$income)))
+training_svm_r_AUC <- as.numeric(training_svm_r_ROC$auc) 
+training_svm_r_AUC
+training_svm_r_ROC_curve <- plot(training_svm_r_ROC, main="Random Forest - Training ROC Curve")
+
+#confusion matrix, accuracy, kappa, precision, recall & F1 
+training_svm_r_CM <- confusionMatrix(training_svm_r_predict_class, test$income, positive = "X2", mode = "prec_recall")
+training_svm_r_CM
+#Explain which are more relevant to look at due to our imbalanced data; interpretation is in https://topepo.github.io/caret/measuring-performance.html
+```
+
+# 4. Testing Data 
+
+## 4.1 Loading Testing Data 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#in text file delte the first few characters that are not observations in the data set
+ds_test_raw <- read.table("adult.test.txt", sep =",", header = FALSE, na.strings = " ?")
+```
+
+## 4.2 Data Preprocessing - Training Data
+
+### 4.2.1 Renaming column labels
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+colnames(ds_test_raw)<-c("age", "workclass", "fnlwgt", "education", "education.num", "marital.status", "occupation", "relationship", "race", "sex", "capital.gain", "capital.loss", "hours.perweek", "native.country","income")
+
+summary(ds_test_raw)
+```
+
+### 4.2.2 Renaming "test" into "train" so all the steps are equivalent and the feature names lign up later 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ds_train_raw <- ds_test_raw
+```
+
+### 4.2.3 Formatting missing values & dropping unnecessary variables
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#Percentages of missing values withinf features 
+sapply(ds_train_raw, function(x) (sum(is.na(x))/nrow(ds_train_raw))) #summing missing values
+
+#plotting missing values
+y.labels <- rep("",nrow(ds_train_raw))
+y.at <- c(1:nrow(ds_train_raw))
+missmap(ds_train_raw, col=c("red", "grey"), y.labels = y.labels, y.at = y.at)
+
+ds_train_raw <- na.omit(ds_train_raw) #omitting missing values
+row.names(ds_train_raw) <- 1:nrow(ds_train_raw) #reformatting the row order 
+ds_train_raw$fnlwgt <- NULL #just some weighting https://web.cs.wpi.edu/~cs4341/C00/Projects/fnlwgt
+```
+
+### 4.2.4 Log-transform skewed variables & normalize numeric variables
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+attach(ds_train_raw)
+
+#check the type of variables
+sapply(ds_train_raw, class)
+
+par(mfrow=c(1,5),mar=c(4,4,4,4))
+
+#draw histograms to find skewed data
+hist(age) #slightly skwed to the right 
+hist(education.num) #seems normal
+hist(capital.gain) #severely skewed to the right 
+hist(capital.loss) #severely skewed to the righ 
+hist(hours.perweek)
+
+par(mfrow=c(1,1))
+
+#take log of highly skewed data
+ds_train_log <- ds_train_raw
+ds_train_log$log_capital.gain <- log(capital.gain + 1) #add one in both cases since log of 0 is not defined
+ds_train_log$log_capital.loss <- log(capital.loss + 1) #here the same as in the line above
+ds_train_log$log_age <- log(age)
+ds_train_log$log_education.num <- log(education.num)
+ds_train_log$capital.gain <- NULL
+ds_train_log$capital.loss <- NULL
+
+par(mfrow=c(1,2),mar=c(4,4,4,4))
+hist(ds_train_log$log_capital.gain)
+hist(ds_train_log$log_capital.loss)
+par(mfrow=c(1,1))
+
+#normalization
+numeric_var <- c("age", "education.num", "log_capital.gain", "log_capital.loss", "hours.perweek")
+ds_train_norm <- ds_train_log %>% mutate_at((vars(numeric_var)), scale) 
+
+detach(ds_train_raw)
+```
+
+### 4.2.5 Dummy variables one-hot encoding and income factorization 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+attach(ds_train_raw)
+
+#factorization
+factor_var <- c("workclass", "education", "marital.status", "occupation", "relationship", "race", "sex", "native.country")
+ds_train_fact <- ds_train_log %>% mutate_at(vars(factor_var), as.factor)
+
+#check levels of factor variables
+sapply(ds_train_fact, levels)
+
+#checking the counts for native.country variable
+ggplot(ds_train_fact, aes(x = native.country)) +  
+        geom_bar(aes(y = (..count..)/sum(..count..))) + 
+        scale_y_continuous(labels=percent, limits = c(0,1), breaks = seq(0,1,0.1)) +
+        theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+        labs(title="Observation per Country", x = "Country", y = "Percent") 
+
+
+#renaming all countries which are not US into "Other" since the US accounts for over 90% 
+ds_train_fact$native.country <- recode(native.country, " United-States" = "United-States", .default = "Other")
+
+#combining normalized numeric and factorized character variables
+ds_train_comb <- as.data.frame(c(1:nrow(ds_train_norm)))
+
+for (i in numeric_var) {
+      col1 <- colnames(ds_train_norm[i])
+      ds_train_comb <- cbind(ds_train_comb,ds_train_norm[,col1])
+}
+
+for (i in factor_var) {
+      col2 <- colnames(ds_train_fact[i])
+      ds_train_comb <- cbind(ds_train_comb,ds_train_fact[,col2])
+  }
+
+#binding income into the dataframe
+ds_train_comb <- cbind(ds_train_comb,income)
+
+#converting factorial variables to dummy variables by one-hot encoding
+x <- model.matrix(income~., ds_train_comb[,-nrow(ds_train_comb)]) 
+
+#finalizing pre-processing of the training data set 
+ds_train_ready <- as.data.frame(x) 
+ds_train_ready[,1:2] <- NULL
+ds_train_ready <- cbind(ds_train_ready,income)
+colnames(ds_train_ready)[1:5] <- numeric_var
+training_data <- ds_train_ready
+
+detach(ds_train_raw)
+```
+
+### 4.2.6 Changing the name to testing data again 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+testing_data <- ds_train_ready
+```
+
+### 4.3 Exploratory Data Analysis 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#dimensions of the data
+dim(testing_data)
+
+#min-max summary of the data
+summary(testing_data[,c(1:5, ncol(testing_data))])
+str(testing_data)
+
+#correlation for numeric variables
+#checking the signficance level at 0.01 percent with pearson correlation significance; crosses for anything that is not signficiant
+testing_ds_cor <- rcorr(as.matrix(testing_data[,c(1:5)], type = "spearman"))
+testing_ds_cor_r <- as.matrix(testing_ds_cor$r)
+testing_ds_cor_P <- as.matrix(testing_ds_cor$P)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+testing_cor_plot <- corrplot(testing_ds_cor_r, title = "Correlation Plot of Numeric Variables", method="color", col=col(200),  
+            type="upper", order="hclust", 
+            addCoef.col = "black", # Add coefficient of correlation
+            tl.col="black", tl.srt=45, #Text label color and rotation
+            # Combine with significance
+            p.mat = testing_ds_cor_P, sig.level = 0.01, insig = "pch", 
+            # hide correlation coefficient on the principal diagonal
+            diag=TRUE 
+            )
+#all of them are significant, but the correlation is very small. this means that we have evidence for light correlation btw the features
+#Why we are using spearman: because most of our variables are continuous and not ordinal(http://support.minitab.com/en-us/minitab-express/1/help-and-how-to/modeling-statistics/regression/supporting-topics/basics/a-comparison-of-the-pearson-and-spearman-correlation-methods/)
+
+#numeric variables exploration
+par(mfrow=c(1,5))
+income_age_boxplot <- boxplot(age ~ income, data = ds_test_raw, xlab = "Income Bracket", ylab = "Age", main = "Income vs Age")
+income_education.num_boxplot <- boxplot(education.num ~ income, data = ds_test_raw, xlab = "Income Bracket", ylab = "Years of Education", main = "income vs education.num")
+income_hours.perweek_boxplot <- boxplot(hours.perweek ~ income, data = ds_test_raw, xlab = "Income Bracket",  ylab = "Hours per Week", main = "income vs hours.perweek")
+income_capital.gain_boxplot <- boxplot(capital.gain ~ income, data = ds_test_raw, xlab = "Income Bracket", ylab = "Capital Gain", main = "income vs capital.gain")
+income_capital.loss_boxplot <- boxplot(capital.loss ~ income, data = ds_test_raw, xlab = "Income Bracket", ylab = "Capital Loss", main = "income vs capital.loss")
+#as we can see form the boxplot, taking the log for capital.loss and gain makese sense 
+par(mfrow=c(1,1))
+
+par(mfrow = c(2,4))
+#categoircal variable exploration 
+testing_income_workclass <- ggplot(ds_test_raw, aes(workclass, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+        labs(title="Income Class vs Work Class") 
+testing_income_education <- ggplot(ds_test_raw, aes(education, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Education") 
+testing_income_marital.status <- ggplot(ds_test_raw, aes(marital.status, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Marital Status") 
+testing_income_occupation <- ggplot(ds_test_raw, aes(occupation, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Occupation") 
+testing_income_relationship <- ggplot(ds_test_raw, aes(relationship, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Relationship") 
+testing_income_race <- ggplot(ds_test_raw, aes(race, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Race") 
+testing_income_sex <- ggplot(ds_test_raw, aes(sex, ..count..)) + 
+    geom_bar(aes(fill=income), position = "dodge") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+    labs(title="Income Class vs Sex") 
+
+testing_income_workclass
+testing_income_education
+testing_income_marital.status
+testing_income_occupation
+testing_income_relationship
+testing_income_race
+testing_income_sex
+
+par(mfrow=c(1,1))
+```
+
+### 4.4 Creating syntactically correct labels for factor variables in order for caret package to work 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#Syntactically correct labels for factor varaibles 
+feature.names=names(testing_data)
+for (f in feature.names) {
+  if (class(testing_data[[f]])=="factor") {
+    levels <- unique(c(testing_data[[f]]))
+    testing_data[[f]] <- factor(testing_data[[f]],
+                   labels=make.names(levels))
+  }
+}
+
+rm(f, feature.names)
+```
+
+### 4.5 Removing unneccessary data 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+rm(ds_test_raw, ds_train_raw, ds_train_log, ds_train_fact, ds_train_norm, ds_train_comb, ds_train_ready, x, col1, col2, factor_var, numeric_var, i, levels, y.at, y.labels)
+```
+
+# 5. Algorithms applied to Testing Data
+
+After we have seen how the algorithms perform on the trainign data's testing subset, we now train the algorithms on the entire training data, using the insights on hyperparameter tuning that we have obtained previously and then check our prediction accuracy on the testing data. 
+
+## 5.1 Logistic Regression
+
+### 5.1.1 Predicting
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#predicting class and probability
+testing_lgr_predict_class <- predict(lgr_model, newdata = testing_data, classprobs = TRUE, type = "raw")
+testing_lgr_predict_prob <- predict(lgr_model, newdata = testing_data, type = "prob")
+```
+
+### 5.1.2 Performance Evaluation
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#AUC and ROC curve 
+testing_lgr_ROC <- roc(predictor = testing_lgr_predict_prob$X2, response = testing_data$income, levels = rev(levels(testing_data$income)))
+testing_lgr_AUC <- as.numeric(testing_lgr_ROC$auc) 
+testing_lgr_AUC
+testing_lgr_ROC_curve <- plot(testing_lgr_ROC, main="Logistic Regression - Testing ROC Curve")
+testing_lgr_ROC_curve
+
+#ensuring similar levels so that confusion matrix works 
+#u = union(testing_lgr_predict_class, testing_data$income)
+#testing_lgr_predict_class <- factor(testing_lgr_predict_class, u)
+#testing_data$income <- factor(testing_data$income, u)
+
+#confusion matrix, accuracy, kappa, precision, recall & F1 
+#testing_lgr_predict_class <- ifelse(testing_lgr_predict_prob > 0.5,1,0)
+testing_lgr_CM <- confusionMatrix(testing_lgr_predict_class, testing_data$income, positive = "X2", mode = "prec_recall")
+testing_lgr_CM
+```
+
+## 5.2 LDA
+
+### 5.2.1 Predicting 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+testing_data_lda <- testing_data[,-7]
+
+#predicting class and probability
+testing_lda_predict_class <- predict(lda_model, newdata = testing_data_lda, classprobs = TRUE)
+testing_lda_predict_prob <- predict(lda_model, newdata = testing_data_lda, type = "prob")
+```
+
+### 5.5.2 Performance Evaluation
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#AUC and ROC curve 
+testing_lda_ROC <- roc(predictor = testing_lda_predict_prob$X2, response = testing_data$income, levels = rev(levels(testing_data$income)))
+testing_lda_AUC <- as.numeric(testing_lda_ROC$auc) 
+testing_lda_AUC
+testing_lda_ROC_curve <- plot(testing_lda_ROC, main="Random Forest - Testing ROC Curve")
+
+#confusion matrix, accuracy, kappa, precision, recall & F1 
+testing_lda_CM <- confusionMatrix(testing_lda_predict_class, testing_data$income, positive = "X2", mode = "prec_recall")
+testing_lda_CM
+```
+
+## 5.3 K-Nearest Neighbors
+
+### 5.3.1 Predicting 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+testing_kNN_predict_class <- predict(kNN_model, newdata = testing_data, classprobs = TRUE)
+testing_kNN_predict_prob <- predict(kNN_model, newdata = testing_data, type = "prob")
+```
+
+### 5.3.2 Performance Evaluation
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#AUC and ROC curve 
+testing_kNN_ROC <- roc(predictor = testing_kNN_predict_prob$X2, response = testing_data$income, levels = rev(levels(testing_data$income)))
+testing_kNN_AUC <- as.numeric(testing_kNN_ROC$auc) 
+testing_kNN_AUC
+testing_kNN_ROC_curve <- plot(testing_kNN_ROC, main="k-Nearest Neighbors - Testing ROC Curve")
+
+#confusion matrix, accuracy, kappa, precision, recall & F1 
+testing_kNN_CM <- confusionMatrix(testing_kNN_predict_class, testing_data$income, positive = "X2", mode = "prec_recall")
+testing_kNN_CM
+```
+
+## 5.4 Support-Vector Machines
+
+### 5.4.1 Predicting - Linear Kernel 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+testing_svm_l_predict_class <- predict(svm_l_model, newdata = testing_data, classprobs = TRUE)
+testing_svm_l_predict_prob <- predict(svm_l_model, newdata = testing_data, type = "prob")
+```
+
+### 5.4.2 Performance Evaluation - Linear Kernel 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#AUC and ROC curve 
+testing_svm_l_ROC <- roc(predictor = testing_svm_l_predict_prob$X2, response = testing_data$income, levels = rev(levels(testing_data$income)))
+testing_svm_l_AUC <- as.numeric(testing_svm_l_ROC$auc) 
+testing_svm_l_AUC
+testing_svm_l_ROC_curve <- plot(testing_svm_l_ROC, main="Random Forest - ROC Curve")
+
+#confusion matrix, accuracy, kappa, precision, recall & F1 
+testing_svm_l_CM <- confusionMatrix(testing_svm_l_predict_class, testing_data$income, positive = "X2", mode = "prec_recall")
+testing_svm_l_CM
+```
+
+### 5.4.3 Predicting - Radial Kernel 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+testing_svm_r_predict_class <- predict(svm_r_model, newdata = testing_data, classprobs = TRUE)
+testing_svm_r_predict_prob <- predict(svm_r_model, newdata = testing_data, type = "prob")
+```
+
+### 5.4.4 Performance Evaluation - Radidial Kernel 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#AUC and ROC curve 
+testing_svm_r_ROC <- roc(predictor = testing_svm_r_predict_prob$X2, response = testing_data$income, levels = rev(levels(testing_data$income)))
+testing_svm_r_AUC <- as.numeric(testing_svm_r_ROC$auc) 
+testing_svm_r_AUC
+testing_svm_r_ROC_curve <- plot(testing_svm_r_ROC, main="Random Forest - ROC Curve")
+
+#confusion matrix, accuracy, kappa, precision, recall & F1 
+testing_svm_r_CM <- confusionMatrix(testing_svm_r_predict_class, testing_data$income, positive = "X2", mode = "prec_recall")
+testing_svm_r_CM
+```
+
+# 6. Conclusion 
+
+## 6.1 Formatting
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#formatting computational time for training and tuning in minutes
+method_names <- c("Logistic Regression", "LDA", "kNN", "SVM - Linear Kernel", "SVM - Radial Kernel")
+train_times <- round(c(lgr_train_time, lda_train_time, kNN_train_time, svm_l_train_time, svm_r_train_time), digits = 2)
+col1 <- "method"
+col2 <- "duration in sec"
+training_times <- melt(data.frame(cbind(method_names, train_times)))
+colnames(training_times) <- c(col1, col2)
+
+#formatting scores comparison
+training_accuracy_scores <- round(c(training_lgr_CM$overall["Accuracy"],
+                                    training_lda_CM$overall["Accuracy"],
+                                    training_kNN_CM$overall["Accuracy"],
+                                    training_svm_l_CM$overall["Accuracy"],
+                                    training_svm_r_CM$overall["Accuracy"]), 
+                                  digits = 4)
+training_recall_scores <- round(c(training_lgr_CM$byClass["Recall"],
+                                       training_lda_CM$byClass["Recall"],
+                                       training_kNN_CM$byClass["Recall"],
+                                       training_svm_l_CM$byClass["Recall"],
+                                       training_svm_r_CM$byClass["Recall"]), 
+                                     digits = 4)
+training_precision_scores <- round(c(training_lgr_CM$byClass["Precision"],
+                                       training_lda_CM$byClass["Precision"], 
+                                       training_kNN_CM$byClass["Precision"],
+                                       training_svm_l_CM$byClass["Precision"],
+                                       training_svm_r_CM$byClass["Precision"]), 
+                                     digits = 4)
+training_kappa_scores <- round(c(training_lgr_CM$overall["Kappa"],
+                                 training_lda_CM$overall["Kappa"],
+                                 training_kNN_CM$overall["Kappa"],
+                                 training_svm_l_CM$overall["Kappa"],
+                                 training_svm_r_CM$overall["Kappa"]), 
+                               digits = 4)
+testing_accuracy_scores <- round(c(testing_lgr_CM$overall["Accuracy"],
+                                   testing_lda_CM$overall["Accuracy"],
+                                   testing_kNN_CM$overall["Accuracy"],
+                                   testing_svm_l_CM$overall["Accuracy"],
+                                   testing_svm_r_CM$overall["Accuracy"]), 
+                                 digits = 4)
+testing_recall_scores <- round(c(testing_lgr_CM$byClass["Recall"], 
+                                   testing_lda_CM$byClass["Recall"],
+                                   testing_kNN_CM$byClass["Recall"], 
+                                   testing_svm_l_CM$byClass["Recall"],
+                                   testing_svm_r_CM$byClass["Recall"]), digits = 4)
+testing_precision_scores <- round(c(testing_lgr_CM$byClass["Precision"],
+                                      testing_lda_CM$byClass["Precision"],
+                                      testing_kNN_CM$byClass["Precision"],
+                                      testing_svm_l_CM$byClass["Precision"],
+                                      testing_svm_r_CM$byClass["Precision"]),
+                                    digits = 4)
+testing_kappa_scores <- round(c(testing_lgr_CM$overall["Kappa"],
+                                testing_lda_CM$overall["Kappa"],
+                                testing_kNN_CM$overall["Kappa"],
+                                testing_svm_l_CM$overall["Kappa"],
+                                testing_svm_r_CM$overall["Kappa"]),
+                                    digits = 4)
+training_auc_scores <- round(c(training_lgr_AUC, 
+                               training_lda_AUC, 
+                               training_kNN_AUC, 
+                               training_svm_l_AUC, 
+                               training_svm_r_AUC), 
+                             digits = 4)
+testing_auc_scores <- round(c(testing_lgr_AUC, 
+                              testing_lda_AUC, 
+                              testing_kNN_AUC, 
+                              testing_svm_l_AUC, 
+                              testing_svm_r_AUC), 
+                            digits = 4)
+col1 <- "method"                         
+col2 <- "accuracy"
+col3 <- "AUC"
+col4 <- "recall"
+col5 <- "precision"
+col6 <- "kappa"
+
+training_scores <- melt(data.frame(cbind(method_names, training_accuracy_scores, training_auc_scores, training_recall_scores,  training_precision_scores, training_kappa_scores)))
+colnames(training_scores) <- c(col1, col2, col3, col4, col5, col6)
+testing_scores <- melt(data.frame(cbind(method_names, testing_accuracy_scores, testing_auc_scores, testing_recall_scores,  testing_precision_scores, testing_kappa_scores)))
+colnames(testing_scores) <- c(col1, col2, col3, col4, col5, col6)
+```
+
+## 6.2 Removing Unneccessary Variables 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+rm(lda_test, lda_train, svm_tunegrid, train, test, control, metric, seed, col, method_names, train_times, col1, col2, col3, col4, col5, col6, training_accuracy_scores, training_precision_scores, training_recall_scores, training_kappa_scores, testing_accuracy_scores, testing_precision_scores, testing_recall_scores, testing_kappa_scores, training_auc_scores, testing_auc_scores)
+```
+
+## 6.3 Comparison of Model Performance
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#training time 
+training_times
+
+par(mfrow=c(1,2))
+
+#training ROC curves
+plot(training_lgr_ROC_curve, col = "red", main = "Training ROC Curve Comparison", xlab = "False Positive Rate (1 - Specificity)", ylab = "True Positive Rate (Recall)", legacy.axes = TRUE)
+plot(training_lda_ROC_curve, col = "black", add = TRUE)
+plot(training_kNN_ROC_curve, col = "green", add = TRUE)
+plot(training_svm_l_ROC_curve, col = "cyan", add = TRUE)
+plot(training_svm_r_ROC_curve, col = "blue", add = TRUE)
+legend(0.6, 0.25, legend=c("Logistic Regression", "LDA", "kNN", "SVM - Linear Kernel", "SVM - Radial Kernel"), col = c("red", "black", "green", "cyan", "blue"), lty = c(1,1,1,1,1), cex=0.8)
+
+#testing ROC curves 
+testing_roc_curves <- plot(testing_lgr_ROC_curve, col = "red", main = "Testing ROC Curve Comparison", xlab = "False Positive Rate (1 - Specificity)", ylab = "True Positive Rate (Recall)", legacy.axes = TRUE)
+plot(testing_lda_ROC_curve, col = "black", add = TRUE)
+plot(testing_kNN_ROC_curve, col = "green", add = TRUE)
+plot(testing_svm_l_ROC_curve, col = "cyan", add = TRUE)
+plot(testing_svm_r_ROC_curve, col = "blue", add = TRUE)
+legend(0.6, 0.25, legend=c("Logistic Regression", "LDA", "kNN", "SVM - Linear Kernel", "SVM - Radial Kernel"), col = c("red", "black", "green", "cyan", "blue"), lty = c(1,1,1,1,1), cex=0.8)
+
+par(mfrow=c(1,1))
+
+#scores comparison
+training_scores
+testing_scores
+```
+
