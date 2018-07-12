@@ -1,0 +1,963 @@
+---
+title: "XXX"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Update Working Status
+
+## 05/07/2018: Creating a neural network
+## 06/07/2018: Reworked structure of the code 
+## 08/07/2018: Implemented a 1 year lag into the Merged variable
+## 09/07/2018: Adding the left-out variables in Section 2.2, deleting 2016 variables
+## 10/07/2018: Working on infinite values/variables  
+
+==================================================================================================================
+
+# Update Performance Status (only based on Logistic Regression as an indicator)
+
+## 09/07/2018.0: After the implementation of lagging the prediction performance improved substantially
+### Logistic Regression:            Reference
+####                    Prediction FALSE  TRUE
+####                         FALSE 33336  1268
+####                         TRUE   1390   153
+## 09/07/2018.1: Deleting 2016 variables improves performance slightly; exlcuding financial sector also leads to minor improvement 
+### Logistic Regression:            Reference
+####                    Prediction FALSE  TRUE
+####                         FALSE 32176  1247
+####                         TRUE   1310   172
+
+===================================================================================================================
+
+# 0. Settings
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE, echo=TRUE}
+setwd("~/LSE/MA426_DissertationInOR/GS")
+```
+
+===================================================================================================================
+
+# 1. Install & Load Packages
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#install.packages("readxl")       #read excel data file 
+#install.packages("plyr")         #revaluing levels
+#install.packages("dplyr")        #data manipulation
+#install.packages("reshape2")     #reshaping data
+#install.packages("ggplot2")      #plotting graphs
+#install.packages("RColorBrewer") #mixing colours
+#install.packages("gplots")       #plotting heatmaps
+#install.packages("ggrepel")      #formatting pie charts
+#install.packages("forcats")      #formatting pie charts
+#install.packages("scales")       #adjusting scales in plots
+#install.packages("Amelia")       #mapping missing values
+#install.packages("DataExplorer") #mapping missing values
+#install.packages("mice")         #imputation of missing values
+#install.packages("caret")        #building models
+#install.packages("DMwR")         #smote implementation
+#install.packages("purrr")        #functional programming (map)
+#install.packages("pROC")         #aUC calculations
+#install.packages("PRROC")        #precision-Recall curve calculations
+#install.packages("class")        #classifcation fucntions
+#install.packages("Hmisc")        #correlation Matrix
+#install.packages("RcmdrMisc")    #correlation Matrix 
+#install.packages("corrplot")     #plotting correlations
+#install.packages("sjPlot")       #tuning k with elbow method
+#install.packages("MLmetrics")    #machine learning metrics 
+#install.packages("nnet")         #neural networks
+
+library(readxl)
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+library(gplots)
+library(ggrepel)
+library(forcats)
+library(scales)
+library(Amelia)
+library(DataExplorer)
+library(mice)
+library(caret)
+library(DMwR)
+library(pROC)
+library(purrr)
+library(PRROC)
+library(class)
+library(Hmisc)
+library(RcmdrMisc)
+library(corrplot)
+library(sjPlot)
+library(MLmetrics)
+library(nnet)
+```
+
+===================================================================================================================
+
+# 2. Creating & Cleaning Database
+
+## 2.1 Loading the Compustat data
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Loading the compustat data into Excel 
+df.compustat.raw <- read_excel("All.Companies.Database.3.xlsx",
+                           "WRDS", 
+                           col_names = TRUE)
+
+# Variable names 
+colnames(df.compustat.raw)
+```
+
+## 2.2 Missind data
+```{r, message = FALSE, warning=FALSE, echo=TRUE}
+df.compustat.0 <- df.compustat.raw
+
+# Delete variables not needed 
+var.delete <- c("Global Company Key", 
+                "Data Date",                                        
+                "Industry Format",
+                "Level of Consolidation - Company Annual Descriptor",
+                "Population Source",
+                "Data Format",
+                "Ticker Symbol",
+                "CUSIP",
+                "ISO Currency Code",
+                "Investment Securities - Equity",
+                "Investments - Permanent - Total",
+                "Retained Earnings",
+                "Revenue/Income - Sundry",
+                "Stockholders Equity - Parent",
+                "Stockholders Equity - Total",
+                "Active/Inactive Status Marker",
+                "Stock Ownership Code",
+                "Working Capital (Balance Sheet)",
+                "Research Company Deletion Date")
+for (i in var.delete) {
+df.compustat.0[[i]] <- NULL  
+}
+
+# Visualize missing data 
+plot_missing(df.compustat.0)
+
+# See if there are patterns in the missing data
+y.labels <- rep("",nrow(df.compustat.0))
+y.at <- c(1:nrow(df.compustat.0))
+#par(mar=c(7.1, 2.1, 4.1, 2.1), 
+#    mgp=c(5, 1, 0), 
+#    las=0)
+missmap(df.compustat.0, 
+        col=c("red", "grey"), 
+        y.labels = y.labels, 
+        y.at = y.at)
+
+# Check whether there is a relationship between missing values and the years
+df.missing.years <- df.compustat.0 %>%
+  group_by(df.compustat.0$`Data Year - Fiscal`) %>%       
+  summarise(count = n())
+colnames(df.missing.years) = c("year", "observations")
+df.missing.years$values <- df.missing.years$observations * 26 
+#df.missing.years$values.missing <- df.compustat.0 %>%
+#  group_by(df.compustat.0$`Data Year - Fiscal`) #%>%       
+#  sum(is.na(df.compustat.0$`Assets - Total`))
+v.years = unique(df.compustat.0$`Data Year - Fiscal`)
+
+
+#for (i in v.years) {
+#  n <- sum(is.na(df.compustat.0$`Stockholders Equity - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+#  df.missing.years$values.missing[df.missing.years$year==i] <- n
+#}
+
+# The "Stupid" approach to calculate the percentage of na's missing 
+#============================================================================================================
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Current Assets - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing1[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Assets - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing2[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Capital Expenditures`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing3[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$Cash[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing4[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Common Shares Used to Calculate Earnings Per Share - Basic`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing5[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Debt in Current Liabilities - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing6[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Long-Term Debt - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing7[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Dividends - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing8[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Earnings Before Interest and Taxes`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing9[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Earnings Per Share (Basic) - Including Extraordinary Items`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing10[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Inventories - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing11[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Current Liabilities - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing12[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Liabilities - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing13[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Net Income (Loss)`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing14[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Operating Activities - Net Cash Flow`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing15[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Revenue - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing16[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Sales/Turnover (Net)`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing17[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Interest and Related Expense - Total`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing19[df.missing.years$year==i] <- n
+}
+for (i in v.years) {
+  n <- sum(is.na(df.compustat.0$`Market Value - Total - Fiscal`[df.compustat.0$`Data Year - Fiscal`==i]))
+  df.missing.years$values.missing20[df.missing.years$year==i] <- n
+}
+df.missing.years$values.missing.total <- rowSums(df.missing.years[,c(4:23)])
+df.missing.years$perct.missing <- (df.missing.years$values.missing.total / df.missing.years$values)* 100
+#============================================================================================================
+
+# Plotting the missing variables 
+ggplot(df.missing.years, aes(x=year, y=values.missing.total)) + 
+  geom_bar(stat = "identity") + 
+  labs(title = "Total values missing per year") +
+  xlab("Year") +
+  ylab("Total Missing Values")
+ggplot(df.missing.years, aes(x=year, y=perct.missing)) + 
+  geom_bar(stat = "identity") + 
+  labs(title = "Percentage of values missing per year") +
+  xlab("Year") +
+  ylab("Percent")
+
+# Graph on the percentage of missing values in rows
+perct.missing <- function(x){sum(is.na(x))/length(x)*100}
+df.miss.perct.row <- as.data.frame(apply(df.compustat.0[,-24],1,perct.missing))
+colnames(df.miss.perct.row) <- "missing.perct.in.row"
+ggplot(df.miss.perct.row, aes(missing.perct.in.row)) +
+  geom_bar() + 
+  labs(title = "Frequency distribution of row missing percentages") +
+  xlab("Missing Percentage in Row") +
+  ylab("Row Counts")
+
+# Delete observations with more than 50% of values missing (excl. "Research Co Reason for Deletion" since the missing ones represent companies that did not get deleted because they merged)
+df.compustat.0$missing.perct.in.row <- df.miss.perct.row$missing.perct.in.row
+df.compustat.0 <- df.compustat.0[!df.compustat.0$missing.perct.in.row >= 15,] 
+
+# Missing values plot update
+plot_missing(df.compustat.0)
+
+# Deleting missing.perct.in.row
+df.compustat.0$missing.perct.in.row <- NULL
+
+# Checking how strong the reationship is between "Market Value - Total - Fiscal" and Equity, Assets, etc.; since the relationship is fairly strong and sign. at the 1% lvl we are keeping the market value and will be imputing with the rest of the missing values
+m.corr.mv <- rcorr.adjust(as.matrix(df.compustat.0[,c(3,4,6,11,15,16,18,22)], 
+                                            method = "spearman", 
+                                            use = "complete.obs"))  
+corr.r.mv <- as.matrix(m.corr.mv$R$r) #correlation coefficient
+corr.P.mv <- as.matrix(m.corr.mv$P) #p-value for the correlation coefficients
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+par(mar=c(1, 1, 1, 1), mgp=c(1, 1, 1), las=1)
+corrplot(corr.r.mv, 
+         method="color", 
+         col=col(200),  
+         type="upper", 
+         order="hclust", 
+         addCoef.col = "black", #add coefficient of correlation
+         tl.col="black", tl.srt=20, #text label color and rotation
+         p.mat = corr.P.mv, #combine with significance
+         sig.level = 0.01, #sign. level at 0.01
+         insig = "pch", #crosses for insig. values
+         diag=TRUE, #hide correlation coefficient on the principal diagonal
+         mar = c(0, 0, 0, 0),
+         tl.cex = 0.7) #set margins
+mtext("Correlation between market value and all other variables", at=2.5, line=2, cex=1)
+
+# Creating a dataset with only categorical variables and deleting categorical features; later both will be merged again
+df.compustat.0.cat <- as.data.frame(df.compustat.0$`Data Year - Fiscal`)
+colnames(df.compustat.0.cat) <- "Data Year - Fiscal"
+df.compustat.0.cat$`Compnay Name` <- df.compustat.0$`Company Name`
+df.compustat.0.cat$`Stock Exchange Code` <- df.compustat.0$`Stock Exchange Code`
+df.compustat.0.cat$`Research Co Reason for Deletion` <- df.compustat.0$`Research Co Reason for Deletion`
+df.compustat.0.cat$`Standard Industry Classification Code` <- df.compustat.0$`Standard Industry Classification Code`
+df.compustat.0[,c(1,2,21,23,24)] <- NULL
+
+test <- df.compustat.0
+v.colname <- names(test)
+v.colname.clean <- make.names(v.colname, unique=TRUE)
+colnames(test) <- v.colname.clean
+
+# Imputation of missing values with MICE package
+imputation <- mice(test, m=5, maxit=50, seed=1, method = "pmm")
+
+# Clean Global Environment
+rm(df.miss.perct.row, df.missing.years, i, n, v.years, var.delete, y.at, y.labels, perct.missing)
+
+```
+### Comment: generally one should delete the variables with less than 5% of the observations
+### Comment: Seems like there is an increasing trend of variables missing 
+### Comment: First and last year will be ignored anyways 
+### Question: How do we deal with the increasing variables trend? 
+
+
+## 2.2 Create a dataframe with the required financial variables
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Creating a data frame and adding an ID variable
+df.compustat.1 <- as.data.frame(c(1:225089))
+colnames(df.compustat.1)[1] <- "ID"
+
+# Creating a year variable 
+df.compustat.1$Year <- df.compustat.0$`Data Year - Fiscal`
+
+# Identifiers
+df.compustat.1$Name <- df.compustat.0$`Company Name`
+
+# Variables related to M&A Hypothesis 1 
+df.compustat.1$H1.ROA <- df.compustat.0$`Earnings Before Interest and Taxes` / 
+  df.compustat.0$`Assets - Total`
+
+df.compustat.0$stockholders.equity <- df.compustat.0$`Assets - Total` - 
+  df.compustat.0$`Liabilities - Total`
+df.compustat.1$H1.ROE <- df.compustat.0$`Net Income (Loss)` / 
+  df.compustat.0$stockholders.equity
+
+df.compustat.1$H1.EBIT_OperatingRevenue_Ratio <- df.compustat.0$`Earnings Before Interest and Taxes` /
+  df.compustat.0$`Revenue - Total`
+
+df.compustat.1$H1.Dividend_ShareholdersEquity_Ratio <- df.compustat.0$`Dividends - Total` / 
+  df.compustat.0$stockholders.equity
+
+df.compustat.1$H1.AssetTurnover <- df.compustat.0$`Sales/Turnover (Net)` / 
+  df.compustat.0$`Assets - Total`
+
+df.lag.variables.0 <- df.compustat.0 %>% 
+  arrange(`Company Name`, `Data Year - Fiscal`) %>%    
+  group_by(`Company Name`) %>%
+  mutate(lag.1YearEBIT = lag(`Earnings Before Interest and Taxes`)) %>%
+  mutate(H1.1YearEBITGrowth = (`Earnings Before Interest and Taxes` / 
+                                 abs(lag.1YearEBIT)) * 100)
+df.compustat.1$H1.1YearEBITGrowth <- df.lag.variables.0$H1.1YearEBITGrowth
+
+df.lag.variables.1 <- df.compustat.0 %>% 
+  arrange(`Company Name`, `Data Year - Fiscal`) %>%    
+  group_by(`Company Name`) %>%
+  mutate(lag.3YearEBIT = lag(`Earnings Before Interest and Taxes`, 3)) %>%
+  mutate(H1.3YearEBITGrowth = (`Earnings Before Interest and Taxes` / 
+                                 abs(lag.3YearEBIT)) * 100)
+df.compustat.1$H1.3YearEBITGrowth <- df.lag.variables.1$H1.3YearEBITGrowth
+
+df.compustat.0$working.capital <- df.compustat.0$`Current Assets - Total` - 
+  df.compustat.0$`Current Liabilities - Total` 
+
+df.compustat.1$H1.Inventory_WorkingCapital_Ratio <- df.compustat.0$`Inventories - Total` /
+  df.compustat.0$working.capital
+
+df.compustat.1$H1.Inventory_TotalAssets_Ratio <- df.compustat.0$`Inventories - Total` / 
+  df.compustat.0$`Assets - Total`
+
+df.compustat.1$H1.NetProfit_MarketValue_Ratio <- df.compustat.0$`Net Income (Loss)` / 
+  df.compustat.0$`Market Value - Total - Fiscal`
+
+# Variables related to M&A Hypothesis 2 
+df.compustat.1$H2.MarketToBook_Ratio <- df.compustat.0$`Market Value - Total - Fiscal` / 
+  (df.compustat.0$`Assets - Total` - 
+     df.compustat.0$`Liabilities - Total`)
+
+df.compustat.1$H2.MarketCap_TotalAssets_Ratio <- df.compustat.0$`Market Value - Total - Fiscal` / 
+  df.compustat.0$`Assets - Total`
+
+# Variables related to M&A Hypothesis 3 
+
+df.compustat.1$H3.PE_Ratio <- (df.compustat.0$`Market Value - Total - Fiscal` /
+                                 df.compustat.0$`Common Shares Used to Calculate Earnings Per Share - Basic`)/
+  df.compustat.0$`Earnings Per Share (Basic) - Including Extraordinary Items`
+
+# Variables related to M&A Hypothesis 4
+df.lag.variables.2 <- df.compustat.0 %>% 
+  arrange(`Company Name`, `Data Year - Fiscal`) %>%    
+  group_by(`Company Name`) %>%
+  mutate(lag.Revenue = lag(`Revenue - Total`)) %>%
+  mutate(H4.1YearSalesGrowth = (`Revenue - Total` / 
+                                  abs(lag.Revenue)) * 
+           100)
+df.compustat.1$H4.1YearSalesGrowth <- df.lag.variables.2$H4.1YearSalesGrowth
+
+df.lag.variables.3 <- df.compustat.0 %>% 
+  arrange(`Company Name`, `Data Year - Fiscal`) %>%    
+  group_by(`Company Name`) %>%
+  mutate(lag.Revenue = lag(`Revenue - Total`)) %>%
+  mutate(H4.3YearSalesGrowth = (`Revenue - Total` / 
+                                  abs(lag.Revenue)) *
+           100)
+df.compustat.1$H4.3YearSalesGrowth <- df.lag.variables.3$H4.3YearSalesGrowth
+
+df.compustat.1$H4.CAPEX_OperatingRevenue_Ratio <- df.compustat.0$`Capital Expenditures` /
+  df.compustat.0$`Revenue - Total`
+
+df.compustat.1$H4.QuickAssets_CurrentLiabilities_Ratio <- (df.compustat.0$`Current Assets - Total` -
+                                                             df.compustat.0$`Inventories - Total`) /
+  df.compustat.0$`Current Liabilities - Total`
+
+df.compustat.1$H4.InvestedCapitalTurnover <- df.compustat.0$`Revenue - Total` /
+  (df.compustat.0$`Liabilities - Total` + 
+     df.compustat.0$stockholders.equity)
+
+df.compustat.1$H4.LongTermAssetTurnover <- df.compustat.0$`Revenue - Total` /
+  (df.compustat.0$`Assets - Total` - 
+     df.compustat.0$`Current Assets - Total`)
+
+df.compustat.1$H4.WorkingCapitalTurnover <- df.compustat.0$`Revenue - Total` / 
+  df.compustat.0$`Working Capital (Balance Sheet)`
+
+# Variables related to M&A Hypothesis 5
+df.compustat.1$H5.DividendPayout_Ratio <- (df.compustat.0$`Dividends - Total` /
+                                             df.compustat.0$`Common Shares Used to Calculate Earnings Per Share - Basic`) /
+  df.compustat.0$`Earnings Per Share (Basic) - Including Extraordinary Items`
+
+df.compustat.1$H5.DividendYield <- df.compustat.0$`Dividends - Total` /
+  df.compustat.0$`Market Value - Total - Fiscal`
+
+df.compustat.1$H5.DividendPerShare_EarningsPerShare_Ratio <- (df.compustat.0$`Dividends - Total` /
+                                                                df.compustat.0$`Common Shares Used to Calculate Earnings Per Share - Basic`) /
+  df.compustat.0$`Earnings Per Share (Basic) - Including Extraordinary Items`
+
+# Variables related to M&A Hypothesis 6
+df.compustat.1$H6.NetInterestCoverage <- df.compustat.0$`Earnings Before Interest and Taxes` /
+  df.compustat.0$`Interest and Related Expense - Total`
+
+df.compustat.0$NetDebt <- df.compustat.0$`Debt in Current Liabilities - Total` +
+  df.compustat.0$`Long-Term Debt - Total` - 
+  df.compustat.0$Cash
+df.compustat.1$H6.NetDebt_CashFlow_Ratio <- df.compustat.0$NetDebt /
+  df.compustat.0$`Operating Activities - Net Cash Flow`
+
+##### df.compustat.1$H6.1YearGrowthNetDebt 
+df.lag.variables.4 <- df.compustat.0 %>% 
+  arrange(`Company Name`, `Data Year - Fiscal`) %>%    
+  group_by(`Company Name`) %>%
+  mutate(lag.NetDebt = lag(NetDebt)) %>%
+  mutate(H6.1YearGrowthNetDebt = (NetDebt / 
+                                    abs(lag.NetDebt)) *
+           100)
+df.compustat.1$H6.1YearGrowthNetDebt <- df.lag.variables.4$H6.1YearGrowthNetDebt
+
+df.lag.variables.5 <- df.compustat.0 %>% 
+  arrange(`Company Name`, `Data Year - Fiscal`) %>%    
+  group_by(`Company Name`) %>%
+  mutate(lag.NetDebt = lag(NetDebt, 3)) %>%
+  mutate(H6.3YearGrowthNetDebt = (NetDebt / 
+                                    abs(lag.NetDebt)) * 
+           100)
+df.compustat.1$H6.3YearGrowthNetDebt <- df.lag.variables.5$H6.3YearGrowthNetDebt
+
+df.compustat.1$H6.CurrentAssets_CurrentLiabilities_Ratio <- df.compustat.0$`Current Assets - Total` /
+  df.compustat.0$`Current Liabilities - Total`
+
+# Variables related to M&A Hypothesis 7 
+df.compustat.1$H7.Industry <- df.compustat.0$`Standard Industry Classification Code`
+
+df.compustat.1$H7.IndexListing <- df.compustat.0$`Stock Exchange Code`
+
+# Varaibles related to M&A Hypothesis 8
+
+df.compustat.1$H8.Current_Ratio <- df.compustat.0$`Current Assets - Total` /
+  df.compustat.0$`Current Liabilities - Total`
+
+##### df.compustat.1$H8.Quick_Ratio
+
+df.compustat.1$H8.NetWorkingCapital_TotalAssets_Ratio <- (df.compustat.0$`Current Assets - Total` -
+                                                            df.compustat.0$`Current Liabilities - Total`) /
+  df.compustat.0$`Assets - Total`
+
+df.compustat.1$H8.NetworkingCapital_Sales_Ratio <- (df.compustat.0$`Current Assets - Total` -
+                                                      df.compustat.0$`Current Liabilities - Total`) /
+  df.compustat.0$`Revenue - Total`
+
+df.compustat.1$H8.LTDebt_MarketValueEquity_Ratio <- df.compustat.0$`Long-Term Debt - Total` / 
+  df.compustat.0$`Market Value - Total - Fiscal`
+
+df.compustat.1$H8.LTDebt_TotalAssets <- df.compustat.0$`Long-Term Debt - Total` / 
+  df.compustat.0$`Assets - Total`
+
+df.compustat.1$H8.LTDebt_NetStockholdersEquity <- df.compustat.0$`Long-Term Debt - Total` / 
+  df.compustat.0$stockholders.equity
+
+df.compustat.1$H8.LTLiabilities_TotalAssets_Ratio <- (df.compustat.0$`Liabilities - Total` - 
+                                                        df.compustat.0$`Current Liabilities - Total`) /
+  df.compustat.0$`Assets - Total`
+
+df.compustat.1$H8.TotalLiabilities_TotalAssets_Ratio <- df.compustat.0$`Liabilities - Total` /
+  df.compustat.0$`Assets - Total`
+
+# Variable indicating whether the firm merged or not 
+df.compustat.1$Merged <- df.compustat.0$`Research Co Reason for Deletion`
+table(df.compustat.1$Merged)
+df.compustat.1$Merged[is.na(df.compustat.1$Merged)] <- 0
+df.compustat.1 <- df.compustat.1[ ! df.compustat.1$Merged %in% c(5, 7, 10), ]
+df.compustat.1$Merged[df.compustat.1$Merged == 4] <- 1
+df.compustat.1$Merged[df.compustat.1$Merged == 6] <- 1
+df.compustat.1$Merged[df.compustat.1$Merged == 2] <- 0
+df.compustat.1$Merged[df.compustat.1$Merged == 3] <- 0
+df.compustat.1$Merged[df.compustat.1$Merged == 9] <- 0
+df.merger.years <- df.compustat.1 %>% 
+  group_by(Name) %>% 
+  filter(Merged == 1) %>% 
+  slice(which.max(Year))
+df.nonmerger.years <- df.compustat.1 %>% 
+  group_by(Name) %>% filter(Merged == 1) %>% 
+  slice(-which.max(Year))
+df.nonmerger.years$Merged <- 0
+df.unmerged.companies.0 <- df.compustat.1 %>% 
+  group_by(Name) %>% 
+  filter(Merged != 1)
+
+# Introducing 1-year lag for target takeover prediction 
+df.merged.companies.0 <- bind_rows(df.merger.years, df.nonmerger.years)
+df.merged.companies.1  <- df.merged.companies.0 %>% 
+  arrange(Name, Year) %>%    
+  mutate(n = 1:n()) %>%
+  group_by(Name) %>%
+  mutate(Lag = ifelse(n - n[Merged == 1] == -1, 1, 0))
+df.merged.companies.2 <- df.merged.companies.1[!(df.merged.companies.1$Merged == 1),]
+df.merged.companies.2$Merged <- NULL
+df.merged.companies.2$n <- NULL
+colnames(df.merged.companies.2)[ncol(df.merged.companies.2)] <- "Merged"
+
+# Deleting the last year, since due to lagging we can only select the n-1 years 
+df.unmerged.companies.1 <- df.unmerged.companies.0[!(df.unmerged.companies.0$Year == 2017),]
+
+# Binding together the merged and unmerged companies 
+df.compustat.2 <- bind_rows(df.merged.companies.2, df.unmerged.companies.1)
+
+# Deleting the entries for 2016
+df.compustat.3 <- df.compustat.2[!(df.compustat.2$Year == 2016),]
+
+# Check the variables created
+sapply(df.compustat.3, class)
+
+# Transform the variables "Year", "Index Listing" and "Industry" to categories
+df.compustat.3$Year <- as.factor(df.compustat.3$Year)
+df.compustat.3$H7.IndexListing <- as.factor(df.compustat.3$H7.IndexListing)
+industry.lvls <- cut(df.compustat.3$H7.Industry, breaks = c(0, 
+                                                        1000, 
+                                                        1500, 
+                                                        2000, 
+                                                        4000, 
+                                                        5000, 
+                                                        5200, 
+                                                        6000, 
+                                                        7000, 
+                                                        9100, 
+                                                        9900, 
+                                                        10000), 
+                     labels = c("Agriculture_Forestry_Fishing", 
+                                "Mining", 
+                                "Construction", 
+                                "Manufacturing", 
+                                "Transportation_Communication_Electric_Gas_Sanitary", 
+                                "Wholesale_Trade", 
+                                "Retail_Trade", 
+                                "Finance_Insurance_RealEstate", 
+                                "Services", 
+                                "Public Administration", 
+                                "Nonclassifiable"))
+df.compustat.3$H7.Industry <- industry.lvls
+
+# Exclude Finance, Insurance & Real Estate industry
+df.compustat.3 <- df.compustat.3[!(df.compustat.3$H7.Industry == "Finance_Insurance_RealEstate"),]
+
+# Removing unnecessary variables 
+rm(df.merger.years, df.nonmerger.years, df.merged.companies.0, df.merged.companies.1, df.merged.companies.2, df.unmerged.companies.0, df.unmerged.companies.1, industry.lvls, df.lag.variables.0, df.lag.variables.1, df.lag.variables.2, df.lag.variables.3, df.lag.variables.4, df.lag.variables.5)
+```
+### To-do: try to get "cleaner" data set; consider a dummy for the different merger waves; try to check online for ratios that have many NAs if there are no alternative values available 
+### Comment: we have to delete 2016 data since for unmerged firms we do not know if they have received an offer in 2018
+### Question: Cannot use log for absolute method since I have negative numbers; shoud I leave the variables negative or should I use log and for the negative variables which become NAs when using log, I just set them to 0 (#df.compustat.1$H1.1YearEBITGrowth <- log(df.lag.variables.0$H1.1YearEBITGrowth))
+### Comment: Decide on how I want to treat market value; either imputate value because it probably correlates strongly with total assets, liabilities and equities or just delete the correpsonding variables! 
+
+## 2.3 Non-corporates (e.g. funds & ETFs) entries
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Delete non-corporates 
+non.corp <- c("Fund", "fund", "ETF", "ETFS")
+df.compustat.4 <- df.compustat.3[!grepl(paste(non.corp, collapse = "|"), df.compustat.3$Name),]
+
+rm(non.corp)
+```
+
+## 2.4 Categorical variables
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+df.compustat.5 <- df.compustat.4
+
+# Remove categorical variables that are not needed
+df.compustat.5$Name <- NULL
+df.compustat.5$Ticker <- NULL
+df.compustat.5$CUSIP <- NULL
+
+# One-hot encoding of categorical variables "Year", "Industry" and "Index Listing"
+dmy<-dummyVars("~ .", data=df.compustat.5, fullRank = T)
+df.compustat.5 <- data.frame(predict(dmy,newdata = df.compustat.5))
+
+# Declare levels for Merged
+df.compustat.5$Merged <- as.factor(df.compustat.5$Merged)
+levels(df.compustat.5$Merged) <- c("no", "yes")
+
+# Test whether we need one-hot encoding at all 
+#df.compustat.5 <- df.compustat.5
+#names <- paste("Var", 1:21, sep = "")
+#df.compustat.5 <- setNames(df.compustat.5, c(names))
+
+# Test to rename the dummy variables as factors 
+#df.compustat.5.test <- df.compustat.5
+#df.compustat.5.test <- as.factor(df.compustat.5)[,1:23] 
+
+rm(dmy)
+```
+### To-Do: possibly improved performance if "Year" is grouped into different M&A waves and one-hot encoded
+### To-Do: possibly improved performance if "Industry" is grouped more granular 
+
+## 2.5 Infinite Values
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+df.compustat.6 <- df.compustat.5
+
+# check how many missing values at this moment (excluding Infinite Values)
+sum(is.na(df.compustat.6)) # total number 
+sum(is.na(df.compustat.6)) / (121297 * 83)
+
+# Check which varibales contain infinite values  
+col.names <- colnames(df.compustat.6)[1:66]
+for (i in col.names) {
+  if ((any(is.infinite(df.compustat.6[[i]]))) == TRUE) {
+    print(i)
+  }
+}
+
+# and delete the columns which contain them
+#col.names <- colnames(df.compustat.6)[1:66]
+#for (i in col.names) {
+#  if ((any(is.infinite(df.compustat.6[[i]])))== TRUE) {
+#    df.compustat.6[[i]] <- NULL
+#  }
+#}
+
+# Transform infinite values to NAs
+is.na(df.compustat.6) <- sapply(df.compustat.6, is.infinite)
+
+# Check how many NAs we have after the transformation 
+sum(is.na(df.compustat.6)) # total number 
+sum(is.na(df.compustat.6)) / (121297 * 83)
+
+rm(col.names, dmy, i)
+```
+### Comment: Infinite values are caused by the denominator usually being 0 in the ratio that is being calculated; since transforming the infinite values to NAs only causes a 0.5% increase in the overall NAs this is how the inifinite values are dealt with 
+
+## 2.4 Analysis of missing values 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+df.compustat.7 <- df.compustat.6
+
+# Visualizing missing data
+sapply(df.compustat.7, function(x) sum(is.na(x)))
+plot_missing(df.compustat.7)
+
+#===========================================================================
+
+# Option Number 1: Deletion of all missing rows
+
+#df.compustat.7 <- na.omit(df.compustat.7)
+
+#===========================================================================
+
+# Option Number 2: Imputation
+
+# Missing data in categorical variables would be dealt with an additional class called "Other", but there are no missing categorical data points
+
+# Missing data in numeric variables (imputation with MICE)
+
+
+#===========================================================================
+
+# Calculate percentages of missing values within variables 
+# ds.missing.perct <- as.data.frame(colnames(df.compustat.4))
+# names(ds.missing.perct) <- "var"
+# total.missing <- sapply(df.compustat.7, 
+#                         function(x) (sum(is.na(x))))
+# ds.missing.perct$perct_missing <- total.missing/nrow(df.compustat.7)
+# 
+# # Omitting all variables for which 10% or more of the data is missing
+# df.compustat.7 <- df.compustat.7
+# ds.missing.perct <- ds.missing.perct[which(ds.missing.perct[,2] >= 0.32),] 
+# row.names(ds.missing.perct) <- 1:nrow(ds.missing.perct)
+# var.missing <- ds.missing.perct[,1]
+# for (i in var.missing) {
+#   col.name.1 <- colnames(df.compustat.7[i]) 
+#   df.compustat.7[,col.name.1] <- NULL
+# }
+# 
+# # Omit na cells 
+# df.compustat.7 <- na.omit(df.compustat.7)
+# row.names(df.compustat.7) <- 1:nrow(df.compustat.7)
+
+rm(col.name.1, ds.missing.perct, i, perct.rows.missing.values, total.missing, var.missing, y.at, y.labels)
+
+
+```
+### To-do: Better treatment of missing values, via MICE package 
+### Comment: Because it is usually not advisable to impute categorical data, a new/separate data class is created for missing categorical data called "Unknown"
+### Question: Can I imputate missing values on the entire data set or do I have to do it only on the training data set? 
+### Comment: Missing data could also be already imputed on the pre-ratio level in the df.compustat.0; this might improve results etc. (extend my current work)
+
+## 2.5 Train-Test-Split for data analysis
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(1)
+index.train <- createDataPartition(df.compustat.7$Merged, 
+                                   p = 0.7, 
+                                   list = FALSE)
+df.train.0 <- df.compustat.7[index.train,]
+df.test.0 <- df.compustat.7[-index.train,]
+```
+
+===================================================================================================================
+
+# 3. Data analysis of training data
+
+## 3.1 Balance of Merged class
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+perct.Merged <- prop.table(table(df.train.0$Merged)) * 100
+### Comment: since highly imbalanced data, use Kappa or Precision-Recall curve
+```
+
+## 3.2 Variable type
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Variable type
+sapply(df.train.0, class)
+### Comment: "Year", "Industry" and "Index Listing" have to be converted to characters and subsequently one-hot encoded 
+### Comment: "Industry" has to be grouped, "Year" potentially too
+### Comment: ID variables such as "Ticker" have to be removed 
+```
+
+## 3.3 Univariate Analysis
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Numerical variables
+
+# Categorical variables
+
+```
+
+## 3.4 Multivariate Analysis 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Numerical variables
+
+# Categorical variables
+
+```
+
+## 3.5 Visualization of variables and their relationship with the "Merged" variable
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Numerical variables
+
+# Categorical variables
+
+```
+
+===================================================================================================================
+
+# 4. Data pre-processing (on entire dataset)
+
+
+
+
+===================================================================================================================
+
+# 5. Application of algorithms
+
+## Training Testing Split
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(1)
+index.train.all <- createDataPartition(df.compustat.7$Merged, 
+                                   p = 0.7, 
+                                   list = FALSE)
+df.train.all <- df.compustat.7[index.train.all,]
+df.test.all <- df.compustat.7[-index.train.all,]
+```
+
+## Prior specifications
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+stats <- function (data, lev = NULL, model = NULL) { 
+  c(postResample(data[, "pred"], data[, "obs"]), 
+    Sens = sensitivity(data[,"pred"], data[, "obs"]), 
+    Spec = specificity(data[, "pred"], data[, "obs"]))
+}
+
+control <- trainControl(method="cv", 
+                        number=10, 
+                        summaryFunction = stats, 
+                        classProbs = TRUE)
+
+metric <- "Kappa"
+```
+
+## Sample for quick calculations or algorithm checks
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#set.seed(1) 
+#df.train.all.sample <- sample_n(df.train.all, 
+#                          size = floor(.05*nrow(df.train.all)), #using 5% from the total data set
+#                          replace = F)
+```
+
+## 5.1 Logit
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(1) 
+
+# Train the model
+fit.logit <- train(Merged~., 
+                   data=df.train.all, 
+                   method="glm", 
+                   family="binomial",
+                   metric=metric, 
+                   trControl=control)
+                   #preProcess = c('BoxCox'))
+
+# Check the results of CV on training data
+fit.logit$results
+
+# Check performance on testing data
+predict.logit <- predict(fit.logit, df.test.all, type = "prob")
+confusionMatrix(predict.logit[,2]>0.05, df.test.all$Merged == "yes")
+```
+## To-do: find out what causes the warnings; merged data cases have to be classified much better either by training algorithm differently or by adjusting the variables 
+
+## 5.2 LDA
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(1) 
+
+# Taking out Industry.Public.Administration since 0 counts and otherwise LDA error
+df.train.all$H7.Industry.Public.Administration <- NULL
+
+# Train the model
+fit.lda <- train(Merged~., 
+                   data=df.train.all, 
+                   method="lda",
+                   metric=metric, 
+                   trControl=control,
+                   preProcess = c('BoxCox'))
+
+# Check the results of CV on training data
+fit.lda$results
+
+# Check performance on testing data
+predict.lda <- predict(fit.lda, df.test.all)
+confusionMatrix(predict.lda, df.test.all$Merged)
+```
+## To-do: find out what causes the warnings; merged data cases have to be classified much better either by training algorithm differently or by adjusting the variables 
+
+## 5.3 Trees 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(1) 
+
+# Train the model
+fit.rtree <- train(Merged~., 
+                   data=df.train.all, 
+                   method="rpart",
+                   metric=metric, 
+                   trControl=control,
+                   parms = list(split = "information"),
+                   tuneLength = 10)
+tuning.grid <- expand.grid( .winnow = c(TRUE,FALSE), .trials=c(5,10,15,20,25), .model="tree" ) 
+fit.btree <- train(Merged~., 
+                   data=df.train.all, 
+                   method="C5.0",
+                   metric=metric, 
+                   trControl=control,
+                   tuneGrid=tuning.grid)
+# mtry = sqrt(ncol(x))
+# tuning.grid <- expand.grid(.mtry=c(1:15))
+# fit.ftree <- train(Merged~., 
+                   # data=df.train.all, 
+                   # method="rf",
+                   # metric=metric, 
+                   # trControl=control,
+                   # tuneGrid=tuning.grid,
+                   # verbose = TRUE)                   
+
+# Check the results of CV on training data
+result.tree <- resamples(list(fit.rtree, fit.btree))
+summary(result.tree)
+dotplot(result.tree, metric = 'Kappa')
+
+# Check performance on testing data
+predict.rtree <- predict(fit.rtree, df.test.all)
+confusionMatrix(predict.rtree, df.test.all$Merged)
+predict.btree <- predict(fit.btree, df.test.all)
+confusionMatrix(predict.btree, df.test.all$Merged)
+```
+## To-do: improve the gridsearch and add plot of gridsearch results
+## Note: one industry variable was dropped (during previous LDA analysis); this should be incorporated earlier in the variable analysis 
+
+## 5.4 Neural Network
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(1) 
+
+# Taking out Industry.Public.Administration since 0 counts and otherwise LDA error
+df.train.all$H7.Industry.Public.Administration <- NULL
+
+tuning.grid <- expand.grid(.size=c(1,5,10),.decay=c(0,0.001,0.1)) 
+
+# Train the model
+fit.nn <- train(Merged~., 
+                   data=df.train.all, 
+                   method="nnet",
+                   metric=metric, 
+                   trControl=control,
+                   tuneGrid=tuning.grid)
+
+# Check the results of CV on training data
+fit.nn$results
+
+# Check performance on testing data
+predict.nn <- predict(fit.nn, df.test.all)
+confusionMatrix(predict.nn, df.test.all$Merged)
+```
+
+===================================================================================================================
+
+# Overall thoughts
+## Currently the classification is very very weak.
+## Through a better dataset, one that includes all offers not only takeovers, as well as incorporates the no-2y-takeover rule should improve the performance
+## Potentially text data from the 10k report should be considered (if possible)
+## Furthermore, the variable selection and the handling of missing data should also improve results 
+## Lastly, more complex algorithms have to be still written (neural networks) to check if they lead to better results
+
+
