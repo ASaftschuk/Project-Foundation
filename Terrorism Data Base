@@ -1,0 +1,997 @@
+---
+title: "MA429_FinalProject"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setting working directory
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+setwd("~/LSE/MA429_AlgorithmsForDataMining/MA429_FinalProject")
+```
+
+# Installing & loading required packages
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#install.packages("readxl")       #read excel data file 
+#install.packages("dplyr")        #data manipulation
+#install.packages("plyr")         #revaluing levels
+#install.packages("reshape2")     #reshaping data
+#install.packages("ggplot2")      #plotting graphs
+#install.packages("RColorBrewer") #mixing colours
+#install.packages("gplots")       #plotting heatmaps
+#install.packages("ggrepel")      #formatting pie charts
+#install.packages("forcats")      #formatting pie charts
+#install.packages("scales")       #adjusting scales in plots
+#install.packages("Amelia")       #mapping missing values 
+#install.packages("caret")        #building models
+#install.packages("DMwR")         #smote implementation
+#install.packages("purrr")        #functional programming (map)
+#install.packages("pROC")         #aUC calculations
+#install.packages("PRROC")        #precision-Recall curve calculations
+#install.packages("class")        #classifcation fucntions
+#install.packages("Hmisc")        #correlation Matrix
+#install.packages("RcmdrMisc")    #correlation Matrix 
+#install.packages("corrplot")     #plotting correlations
+#install.packages("sjPlot")       #tuning k with elbow method
+#install.packages("MLmetrics")    #machine learning metrics 
+
+library(readxl)
+library(dplyr)
+library(plyr)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+library(gplots)
+library(ggrepel)
+library(forcats)
+library(scales)
+library(Amelia)
+library(caret)
+library(DMwR)
+library(pROC)
+library(purrr)
+library(PRROC)
+library(class)
+library(Hmisc)
+library(RcmdrMisc)
+library(corrplot)
+library(sjPlot)
+library(MLmetrics)
+```
+
+# Loading the data set
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ds.raw <- read_excel("globalterrorismdb_0617dist1.xlsx","globalterrorismdb_0617dist", col_names = TRUE)
+```
+
+# Creating a sample of the full data set (for testing & improved time efficiency) 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#Setting seed so the results of the sample created stay the same 
+set.seed(1)
+
+#Draw a random sample from the total data set
+ds.raw.sample <- sample_n(ds.raw, 
+                          size = floor(.05*nrow(ds.raw)), #using 5% from the total data set
+                          replace = F)
+row.names(ds.raw.sample) <- 1:nrow(ds.raw.sample) #adjusting the row numbers
+```
+
+# Missing data
+
+Initially the data set from START handles missing data by either leaving a cell blank (commonly for text variables), assigning a -99 (numerical variables) or assigning a -9 (categorical variables). While for categorical data the new "missing class" represented by -9 is considered to be a good way of dealing with the data, the missing text and numerical data require more thought. In the code chunks below two different approaches are used for dealing with the missing data. These are compared and subsequently the one with the lower missing percentage is chosen. for its missing percentage when turning all types of missing cells (blanks, -99 and -9) to NA. Subsequently, the data set is analyzed for keeping an additional class (-99 which is renamed to MisC) for factor variables, deleting frequently missing text variables and predicting missing numerical variables.   
+
+## Missing data & duplicate variables when treating blanks, -9 and -99 as NAs
+In this first scenario all the blank cells and all missing numerical and categorical are converted to NAs. This is a very naive approach used as a base case for comparison to a more sophisticated approach. 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#Creating data set that will be used for the missing data analysis 
+ds.missing.1 <- ds.raw
+
+#Percentage of data missing in rows before variable reduction
+perct.ds.missing.1.row.prev <- nrow(ds.missing.1[!complete.cases(ds.missing.1), ]) / nrow(ds.missing.1)
+#as one can see 100% of the rows contain missing data 
+
+#Omit duplicate variables, mainly the ones who are available as text and as coded variables
+#Coded variables are omitted and text variables will be one-hot encoded later for analysis 
+var.duplicate <- c("country", "region", "attacktype1", "targtype1", "targsubtype1", "natlty1", "weaptype1", "weapsubtype1")
+for (i in var.duplicate) {
+  col.name.2 <- colnames(ds.missing.1[i]) 
+  ds.missing.1[,col.name.2] <- NULL
+}
+
+#Omit variables which are too granular and will not be considered in the analysis 
+var.unneccessary <- c("provstate", "city", "latitude", "longitude", "specificity", "vicinity","dbsource", "target1")
+for (i in var.unneccessary) {
+  col.name.3 <- colnames(ds.missing.1[i]) 
+  ds.missing.1[,col.name.3] <- NULL
+}
+
+#Based on the GTD Codebook we know that missing values were either coded as blanks, -9 or -99. Since the blanks were converted automatically to NAs, We convert now the -9 and -99 to NA's as well. 
+ds.missing.1[ds.missing.1 == -9 | ds.missing.1 == -99] <- NA
+
+#plot the missing values
+#y.labels <- rep("",nrow(ds.missing.1))
+#y.at <- c(1:nrow(ds.missing.1))
+#par(mar=c(7.1, 2.1, 4.1, 2.1), 
+#   mgp=c(5, 1, 0), 
+#  las=0)
+#missmap(ds.missing.1, 
+#        col=c("red", "grey"), 
+#        y.labels = y.labels, 
+#        y.at = y.at)
+
+#Count & Percentages of missing values withinf features 
+ds.missing.perct <- as.data.frame(colnames(ds.missing.1))
+names(ds.missing.perct) <- "var"
+total.missing <- sapply(ds.missing.1, 
+                        function(x) (sum(is.na(x))))
+ds.missing.perct$perct_missing <- total.missing/nrow(ds.missing.1)
+
+#Omitting all variables for which 10% or more of the data is missing
+ds.missing.perct <- ds.missing.perct[which(ds.missing.perct[,2] >= 0.10),] 
+row.names(ds.missing.perct) <- 1:nrow(ds.missing.perct)
+var.missing <- ds.missing.perct[,1]
+for (i in var.missing) {
+  col.name.1 <- colnames(ds.missing.1[i]) 
+  ds.missing.1[,col.name.1] <- NULL
+}
+##When going through the variables that are missing it becomes clear that the variables which are really interesting for our analysis have no more than 10% of their data missing. All the other variables are too granular (e.g. weapsubtype3) or are optional text fields (e.g. addnotes)
+
+#Plot the missing values
+#y.labels <- rep("",nrow(ds.missing.1))
+#y.at <- c(1:nrow(ds.missing.1))
+#par(mar=c(7.1, 2.1, 4.1, 2.1), 
+#    mgp=c(5, 1, 0), 
+#    las=0)
+#missmap(ds.missing.1, 
+#        col=c("red", "grey"), 
+#        y.labels = y.labels, y.at = y.at)
+
+#Percentage of data missing in rows after variable reduction
+perct.ds.missing.1.row.after <- nrow(ds.missing.1[!complete.cases(ds.missing.1), ]) / nrow(ds.missing.1)
+#by omitting the na cells after having reduced the feature space it is possible to lower the percentage of rows that are incomplete from 100% to 22%.
+
+#Omit na cells 
+ds.missing.1 <- na.omit(ds.missing.1)
+row.names(ds.missing.1) <- 1:nrow(ds.missing.1)
+
+#Cleaning Global Environment 
+rm(ds.missing.perct, col.name.1, col.name.2, col.name.3, i, total.missing, var.duplicate, var.missing, var.unneccessary, y.at, y.labels)
+```
+
+## Missing data & duplicate variables when turning -9 & -99 into NAs
+In this second approach we are creating a missing class which we assing all the missing categorical variables to. The numerical missing variables are treated as before, except for nkill and nwound where it is investigated whether these can be interpolated from each other.
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+#Creating data set that will be used for the analysis after the cleaning process
+ds.missing.2 <- ds.raw
+
+#Percentage of data missing in rows before variable reduction
+perct.ds.missing.2.row.prev <- nrow(ds.missing.2[!complete.cases(ds.missing.2), ]) / nrow(ds.missing.2)
+
+#Omit duplicate variables (text variables will be one-hot encoded later for analysis)
+var.duplicate <- c("country", "region", "attacktype1", "targtype1", "targsubtype1", "natlty1", "weaptype1", "weapsubtype1")
+for (i in var.duplicate) {
+  col.name.2 <- colnames(ds.missing.2[i]) 
+  ds.missing.2[,col.name.2] <- NULL
+}
+
+#Omit variables which are too granular and will not be considered in the analysis 
+var.unneccessary <- c("provstate", "city", "latitude", "longitude", "specificity", "vicinity","dbsource", "target1")
+for (i in var.unneccessary) {
+  col.name.3 <- colnames(ds.missing.2[i]) 
+  ds.missing.2[,col.name.3] <- NULL
+}
+
+#Based on the GTD Codebook we know that missing values were either coded as blanks, -9 or -99. The blanks were converted automatically to NAs. The missing numerical variables are converted to NAs. However, the missing categorical variables (denoted as -9) are relabled to "MisC" which stands for "Missing Class". 
+ds.missing.2[ds.missing.2 == -9] <- "MisC"
+ds.missing.2[ds.missing.2 == -99] <- NA
+
+#Plot the missing values
+#y.labels <- rep("",nrow(ds.missing.2))
+#y.at <- c(1:nrow(ds.missing.2))
+#par(mar=c(7.1, 2.1, 4.1, 2.1), 
+#    mgp=c(5, 1, 0), 
+#    las=0)
+#missmap(ds.missing.2, 
+#        col=c("red", "grey"), 
+#        y.labels = y.labels, 
+#        y.at = y.at)
+##After plotting the missing variables it is visable that the red representing the missing values has moved slightly to the left, giving more space to the grey which are the non-missing values, which is in line with expectations.
+
+#Count & Percentages of missing values within features 
+ds.missing.perct <- as.data.frame(colnames(ds.missing.2))
+names(ds.missing.perct) <- "var"
+total.missing <- sapply(ds.missing.2, function(x) (sum(is.na(x))))
+ds.missing.perct$perct_missing <- total.missing/nrow(ds.missing.2)
+
+#For similar reasons as before variables with 10% or more of the data missing are omitted
+ds.missing.perct <- ds.missing.perct[which(ds.missing.perct[,2] >= 0.10),] 
+row.names(ds.missing.perct) <- 1:nrow(ds.missing.perct)
+var.missing <- ds.missing.perct[,1]
+for (i in var.missing) {
+  col.name.1 <- colnames(ds.missing.2[i]) 
+  ds.missing.2[,col.name.1] <- NULL
+}
+##The variables that have been removed previously and are saved from being omitted using this approach are the following: property, INT_LOG, INT_IDEO, INT_ANY and are related to the internationality of the attack.
+
+#plot the missing values
+#y.labels <- rep("",nrow(ds.missing.2))
+#y.at <- c(1:nrow(ds.missing.2))
+#par(mar=c(7.1, 2.1, 4.1, 2.1), 
+#    mgp=c(5, 1, 0), 
+#    las=0)
+#missmap(ds.missing.2, 
+#        col=c("red", "grey"), 
+#        y.labels = y.labels, 
+#        y.at = y.at)
+
+#The missmap shows thtat nwound and nkill often miss together and in order to see if one can be inferred from the other we check the correlation between the two
+nwound.nkill.corr <- rcorr.adjust(as.matrix(ds.missing.2[,c("nkill","nwound")], 
+                                            method = "spearman", 
+                                            use = "complete.obs"))  
+nwound.nkill.corr.r <- as.matrix(nwound.nkill.corr$R$r) #correlation coefficient
+nwound.nkill.corr.P <- as.matrix(nwound.nkill.corr$P) #p-value for the correlation coefficients
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+par(mar=c(1, 1, 1, 1), mgp=c(3, 0, 1), las=1)
+corrplot(nwound.nkill.corr.r, 
+         title = "Correlation Between Killed & Wounded", 
+         method="color", 
+         col=col(200),  
+         type="upper", 
+         order="hclust", 
+         addCoef.col = "black", #add coefficient of correlation
+         tl.col="black", tl.srt=0, #text label color and rotation
+         p.mat = nwound.nkill.corr.P, #combine with significance
+         sig.level = 0.01, #sign. level at 0.01
+         insig = "pch", #crosses for insig. values
+         diag=TRUE, #hide correlation coefficient on the principal diagonal
+         mar = c(0, 0, 0, 0),
+         tl.cex = 1) #set margins
+##The correlation is 0.54 and significant at a 0.001% level which means that implying nwound from nkill or the other way round might be a reasonable approach.
+
+#Using scatter plot and bar plots to check the linearity and normality conditions between the two variables
+ggplot(data = na.omit(ds.missing.2), aes(x=nkill, y=nwound)) +
+  geom_point() +
+  labs(title = "Scatter Plot of People Killed & Wounded") + 
+  xlab("Number of People Killed") + 
+  ylab("Number of People Wounded")
+ggplot(data = na.omit(ds.missing.2), aes(x=nkill)) + 
+  geom_bar(stat = "count") +
+  labs(title = "Histogram of People Killed") + 
+  xlab("Number of People Killed") + 
+  ylab("Count")
+ggplot(data = na.omit(ds.missing.2), aes(x=nwound)) + 
+  geom_bar(stat = "count") +
+  labs(title = "Histogram of People Wounded") + 
+  xlab("Number of People Wounded") + 
+  ylab("Count")
+
+#Looking at the plots excluding outliers (any observations above 100 for wounded or killed)
+ds.killed.wounded.without.outliers <- cbind.data.frame(ds.missing.2$nkill, ds.missing.2$nwound)
+colnames(ds.killed.wounded.without.outliers) <- c("nkill", "nwound")
+ds.killed.wounded.without.outliers[ds.killed.wounded.without.outliers >= 100] <- NA
+par(mar=c(5.1, 4.1, 4.1, 2.1), mgp=c(3, 1, 0), las=0)
+ggplot(data = na.omit(ds.killed.wounded.without.outliers), aes(x=nkill, y=nwound)) +
+  geom_point() +
+  labs(title = "Scatter Plot of People Killed & Wounded") + 
+  xlab("Number of People Killed") + 
+  ylab("Number of People Wounded")
+ggplot(data = na.omit(ds.killed.wounded.without.outliers), aes(x=nkill)) + 
+  geom_bar(stat = "count") +
+  labs(title = "Histogram of People Killed") + 
+  xlab("Number of People Killed") + 
+  ylab("Count")
+ggplot(data = na.omit(ds.killed.wounded.without.outliers), aes(x=nwound)) + 
+  geom_bar(stat = "count") +
+  labs(title = "Histogram of People Wounded") + 
+  xlab("Number of People Wounded") + 
+  ylab("Count")
+##Even after taking out outliers the relationship between the people wounded and killed in a terrorist attack does not seem to be linear. Furthermore, the normality assumption is not met. Therefore, it is deemed too risky to interpolate the number of people killed from the number of people wounded and the other way round, and thus the missing rows are omitted. Potentially one could perform data transformation techniques such as log or box-cox and subsequently run non-linear algorithms. However, the interpretability of the interpolated data points will be diminished and a non-linear approach also goes against the expected linear relationship and therefore will not be conducted.
+
+#Percentage of data missing in rows after variable reduction
+perct.ds.missing.2.row.after <- nrow(ds.missing.2[!complete.cases(ds.missing.2), ]) / nrow(ds.missing.2)
+##By omitting the na cells after having reduced the feature space it is possible to lower the percentage of rows that are excluded from 100% to 15.60%, which is almost 32% lower than what is achieved with the first approach.
+
+#Omit na cells 
+ds.missing.2 <- na.omit(ds.missing.2)
+row.names(ds.missing.2) <- 1:nrow(ds.missing.2)
+
+#Creating dataset for exploratory analysis 
+ds.ready.1 <- ds.missing.2
+##When using the second, more sophistifcated approach for the treatment of missing data points, one can preserve more variables and actually reduce the number of missing data that is omitting by approx. 1/3 to a total of 15.6%; therfore, the data from the second approach will be used for the analysis that follows.
+```
+
+##Cleaning the Global Environment
+```{r}
+rm(ds.missing.perct, col.name.1, col.name.2, col.name.3, i, total.missing, var.duplicate, var.missing, var.unneccessary, y.at, y.labels, perct.ds.missing.1.row.after, perct.ds.missing.1.row.prev, perct.ds.missing.2.row.after, perct.ds.missing.2.row.prev, nwound.nkill.corr, nwound.nkill.corr.P, nwound.nkill.corr.r, col, ds.killed.wounded.without.outliers)
+```
+
+# Exploratory data analysis 
+
+The two variables of interest for our analysis are "successful" and "nkill". While there are many factors to explore the following exploratory analysis will revolve mainly around those two variables and their relation to other features in the global terrorism database. The exploratory analysis on the database was based on the chapters of the corresponding book "Putting Terrorism in Context" (LaFree, Dugan & Miller, 2013) which was written by 3 START employees who are working on the maintenance of the GTD. 
+
+
+## Worldwide Terrorism Trends 
+```{r}
+#Data frame: Total, succesful and unsuccessful attacks per year
+ds.ready.1.sample.temp <- ds.ready.1.sample
+ds.ready.1.sample.temp$total <- rep(1, nrow(ds.ready.1.sample.temp))
+ds.ready.1.sample.temp$unsuccessful <- ds.ready.1.sample.temp$total - ds.ready.1.sample.temp$success
+ds.total.p.a. <- aggregate(total~iyear, 
+                           data = ds.ready.1.sample.temp, 
+                           sum)
+ds.successful.p.a. <- aggregate(success~iyear, 
+                                data = ds.ready.1.sample.temp, 
+                                sum)
+ds.unsuccessful.p.a. <- aggregate(unsuccessful~iyear, 
+                                  data = ds.ready.1.sample.temp, 
+                                  sum)
+
+#Figure: Total, succesful and unsuccessful attacks per year
+par(mar=c(5.1, 4.1, 4.1, 2.1), 
+    mgp=c(3, 1, 0), 
+    las=0)
+ggplot(data = ds.total.p.a., aes(x=iyear)) + 
+  geom_line(aes(y=total, colour = "Total Numer of Terror Attacks"), size = 1) + 
+  geom_line(data = ds.successful.p.a., aes(y=success, colour = "Successful Terror Attacks"), size = 1) +
+  geom_line(data = ds.unsuccessful.p.a., aes(y=unsuccessful, colour = "Unsuccessful Terror Attacks"), size = 1)+
+  labs(title= "Trend of Total, Successful & Unsuccessful Attacks") +
+  xlab("Year") +
+  ylab("Number of Attacks") + 
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 1970, to = 2016, by = 2))
+##The trend of attacks undertaken is positive; this might be a result of more accurate / improving data collection methods. The number of terroist attacks escalated from 2008 on dramatically with a peak in 2014; the rapid increase in attacks and successful attacks will be investigated later in the heatmap analysis.
+
+#Data frame: Percentages of successful and unsuccessful attacks
+ds.successfulness.perct <- as.data.frame(ds.total.p.a.$iyear)
+colnames(ds.successfulness.perct) <- "iyear"
+ds.successfulness.perct$success_perct <- ds.successful.p.a.$success / ds.total.p.a.$total
+ds.successfulness.perct$unsuccess_perct <- ds.unsuccessful.p.a.$unsuccessful / ds.total.p.a.$total
+
+#Figure: Percentages of successful and unsuccessful attacks
+ggplot(data = ds.successfulness.perct, aes(x=iyear)) + 
+  geom_line(aes(y=success_perct, colour = "Successful Terror Attacks"), size = 1) + 
+  geom_line(aes(y=unsuccess_perct, colour = "Unsuccessful Terror Attacks"), size = 1) + 
+  labs(title = "Trend of Successful vs. Unsuccessful Attacks") + 
+  xlab("Year") +
+  ylab("Percentage") + 
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 1970, to = 2016, by = 2))
+##The number of successful attacks outnumbers the number of unsuccessful attacks by almost 50%.
+
+#Data frame: People killed, wounded and affected per year
+ds.killed.p.a. <- aggregate(nkill~iyear,           
+                            data = ds.ready.1.sample, 
+                            sum) 
+ds.wounded.p.a. <- aggregate(nwound~iyear, 
+                             data = ds.ready.1.sample, 
+                             sum)
+ds.affected.p.a. <- aggregate(nkill+nwound~iyear, 
+                              data = ds.ready.1.sample, 
+                              sum)
+names(ds.affected.p.a.[,2]) <- "affected"
+
+#Figure: People killed, wounded and affected per year
+par(mar=c(5.1, 4.1, 4.1, 2.1), 
+    mgp=c(3, 1, 0), 
+    las=0)
+ggplot(data = ds.killed.p.a., aes(x=iyear)) +
+  geom_line(aes(y=nkill, colour="Killed"), size = 1) +
+  geom_line(data = ds.wounded.p.a., aes(y=nwound, colour="Wounded"), size = 1) +
+  geom_line(data = ds.affected.p.a., aes(y = ds.affected.p.a.[,2], colour = "Affected"),   size = 1) + 
+  labs(title = "Tend of People Killed, Wounded & Affected by Terrorist Attacks") +
+  xlab("Year") +
+  ylab("Number of People") +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) + 
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 1970, to = 2016, by = 2))
+##The number of people affected by terrorist attacks had a positive trend in the past. The number of people who were wounded ususally outnumbers the number of people who were killed, which is a reasonable expectation. The number of people who were killed has reached an all time high in 2016. An interesting observation is that while the number of terrorist attacks peaked in 2014, the number of casualities peaked in 2016 which means that the number of attacks conducted was less but they were more sever in 2016, killing and wounding more people on average.
+
+#Dataframe: People killed per attack
+ds.killed.wounded.attack.ratio <- as.data.frame(ds.killed.p.a.$iyear)
+names(ds.killed.wounded.attack.ratio) <- "iyear"
+ds.killed.wounded.attack.ratio$killed.ratio <- ds.killed.p.a.$nkill/ds.total.p.a.$total
+ds.killed.wounded.attack.ratio$wounded.ratio <- ds.wounded.p.a.$nwound/ds.total.p.a.$total
+
+#Figure: People killed per attack 
+ggplot(data = ds.killed.wounded.attack.ratio, aes(x=iyear)) +
+  geom_line(aes(y=killed.ratio, colour="Killed"), size = 1) +
+  geom_line(aes(y=wounded.ratio, colour="Wounded"), size = 1) +
+  labs(title = "Trend of People Killed per Attack and Wounded per Attack") +
+  xlab("Year") +
+  ylab("Number of People per Attack") +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) + 
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 1970, to = 2016, by = 2))
+##This confirms the observation from the previous graph that more people have been killed per terrorist attack in 2015 and 2016 and therefore, despite the decrease in attacks, an increase in fatalities is observable. Interestingly there is also a spike in the Killed/Attack ratio at the beginning fo the 80s which sustains its level afterwards; this spike might be attributed to the usage of weapons and will be investigated later.
+
+#Data frame: Wounded-to-killed ratio
+ds.wounded.killed.ratio <- as.data.frame(ds.killed.p.a.$iyear)
+names(ds.wounded.killed.ratio) <- "iyear"
+ds.wounded.killed.ratio$ratio <- ds.wounded.p.a.$nwound/ds.killed.p.a.$nkill
+
+#Figure: Wounded-to-killed ratio
+ggplot(data = ds.wounded.killed.ratio, aes(x=iyear)) +
+  geom_line(aes(y=ratio), size = 1) +
+  labs(title = "Wounded-to-Killed Ratio") +
+  xlab("Year") +
+  ylab("Wounded-to-Killed") +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) + 
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 1970, to = 2016, by = 2))
+#Also interesting is that there has been a positive trend in the wounded-to-killed ratio from approx. 1990 to 2004, meaning that more people would get hurt than killed in an attack. Afterwards the trend reversed and is now heading towards 1 again, where almost the same amount of people are getting hurt and killed in a terrorist attack.
+
+```
+
+## Spatial Terrorism Trends
+```{r}
+#Data frame: Attacks, Successful Attacks & Deaths by Region
+ds.total.success.killed.region <- aggregate(cbind(total,success, nkill) ~ region_txt, 
+                                  data = ds.ready.1.sample.temp, 
+                                  sum)
+attach(ds.total.success.killed.region)
+ds.total.success.killed.region$total <- total / sum(total)
+ds.total.success.killed.region$success <- success / sum(success)
+ds.total.success.killed.region$killed <- nkill / sum(nkill)
+ds.region.prct <- as.data.frame(rep(region_txt, times = 3))
+names(ds.region.prct) <- "region"
+ds.region.prct$type <- c(rep("Total Attacks", times = 12), 
+                         rep("Successful Attacks", times = 12),
+                         rep("People Killed", times = 12))
+ds.region.prct$prct <- c(total, success, killed)
+detach(ds.total.success.killed.region)
+
+#Figure: Attacks, Successful Attacks & Deaths by Region
+ggplot(ds.region.prct) + 
+  geom_bar(aes(x=reorder(region, prct), y= prct, fill = type), stat = "identity", position = "dodge") + 
+  coord_flip() +
+  labs(title = "Attacks, Successful Attacks & Deaths by Region") +
+  xlab("Regions") +
+  ylab("Percent") +
+  scale_y_continuous(labels = percent_format())
+
+
+#Heatmaps are used for the trend analysis of attacks by region
+#To create a heatmap the following is done: 
+#   1. A colour palette is created to be used for all heatmaps
+#   2. A density function is drawn to understand the distribution of the data for each heatmap (using Sturge's rule to select
+#      the binsize (K = 1 + 3. 322 * logN, where: K = number of class intervals (bins), N = number of observations in the
+#      set)
+#   3. Based on the density function the colour distribution is chosen
+#   4. Heatmap is created
+
+#Universal colour palette: 
+my.palette <- colorRampPalette(c("green", "yellow", "orange", "red"))(n = 399)
+
+#Data frame & matrix: Attack Trends by Region
+ds.total.region.p.a. <- aggregate(total~iyear + region_txt, 
+                                  data = ds.ready.1.sample.temp, 
+                                  sum)
+mat.total.region.p.a. <- xtabs(total~region_txt+iyear,
+                               data = ds.total.region.p.a.)
+
+#Density function: Attack Trends by Region
+ggplot(data = ds.total.region.p.a., aes(x=total)) +
+  geom_histogram(aes(y=..density..), 
+                 bins = round(1+3.322*log(nrow(ds.total.region.p.a.)))) + 
+  geom_density() +
+  labs(title = "Histogram & Density Plot of Total Number of Attacks per Year") +
+  xlab("Total Number of Attacks") +
+  ylab("Density") +
+  scale_x_continuous(limits = c(0, 230), breaks = seq(from = 0, to = 230, by = 10))
+
+#Colour distribution: Attack Trends by Region
+col.breaks1 = c(seq(51,230,length = 100), # red
+                seq(16,50, length = 100), # orange
+                seq(2,15,length = 100),   # yellow
+                seq(0,1,length = 100))    # green 
+
+#Heatmap: Attack Trends by Region
+heatmap.2(mat.total.region.p.a.,
+  #key = TRUE,               
+  main = "Total Number of Attacks",              
+  density.info="none",               
+  trace="none",                      
+  margins =c(3,13),
+  col=my.palette,                    
+  breaks=col.breaks1,              
+  Colv="FALSE",
+  dendrogram = "row")
+##Unfortunately when specifying manually the heatmap coulours there is no possibility of retrieving the legend. Therefore the heatmap should only indicate the trend of the attacks and no in depth analysis is conducted. 
+
+
+#Data frame & matrix: Successful Attack Trends by Region
+ds.successful.region.p.a. <- aggregate(success~iyear+region_txt, 
+                                       data = ds.ready.1.sample.temp, 
+                                       sum) 
+mat.successful.region.p.a. <- xtabs(success~region_txt+iyear, 
+                                    data = ds.successful.region.p.a.)
+
+#Density function: Successful Attack Trends by Region
+ggplot(data = ds.successful.region.p.a., aes(x=success)) +
+  geom_histogram(aes(y=..density..), 
+                 bins = round(1+3.322*log(nrow(ds.successful.region.p.a.)))) +
+  geom_density() +
+  labs(title = "Histogram & Density Plot of Successful Attacks per Year") +
+  xlab("Successful Number of Attacks") +
+  ylab("Density") +
+  scale_x_continuous(limits = c(0, 230), breaks = seq(from = 0, to = 230, by = 10))
+
+#Colour distribution: Successful Attack Trends by Region
+col.breaks2 = c(seq(51,230,length = 100), # red
+                seq(16,50, length = 100), # orange
+                seq(2,15,length = 100),   # yellow
+                seq(0,1,length = 100))    # green
+
+#Heatmap: Successful Attack Trends by Region
+heatmap.2(mat.successful.region.p.a.,
+  #key = TRUE,              
+  main = "Successful Attacks",      
+  density.info="none",               
+  trace="none",                      
+  margins =c(3,13),                  
+  col=my.palette,                    
+  breaks=col.breaks2,                 
+  Colv="FALSE",
+  dendrogram = "row")
+
+
+#Data frame & matrix: Attack Death Trends by Region
+ds.killed.region.p.a. <- aggregate(nkill~iyear+region_txt, 
+                                   data = ds.ready.1.sample.temp, 
+                                   sum)
+mat.killed.region.p.a. <- xtabs(nkill~region_txt+iyear, 
+                                data = ds.killed.region.p.a.)
+
+#Density function: Attack Death Trends by Region
+ggplot(data = ds.killed.region.p.a., aes(x=nkill)) +
+  geom_histogram(aes(y=..density..), 
+                 bins = round(1+3.322*log(nrow(ds.killed.region.p.a.)))) +
+  geom_density() +
+  labs(title = "Histogram & Density Plot of People Killed") +
+  xlab("Number of People Killed") +
+  ylab("Density") +
+  scale_x_continuous(limits = c(0, 230), breaks = seq(from = 0, to = 230, by = 10))
+
+#Colour distribution: Attack Death Trends by Region
+col.breaks3 = c(seq(101,900,length=100),
+                seq(21, 100, length = 100),
+                seq(2,20,length=100),  
+                seq(0,1,length=100))
+
+#Heatmap: Attack Death Trends by Region
+heatmap.2(mat.killed.region.p.a.,
+  #key = TRUE,              
+  main = "Number of People Killed",      
+  density.info="none",               
+  trace="none",                      
+  margins =c(3,13),                  
+  col=my.palette,                    
+  breaks=col.breaks3,                 
+  Colv="FALSE",
+  dendrogram = "row")
+##In order understand the causes of the increased terrorist attacks in recent years in the Middle East & North Africa, South Asia and Sub-Saharan Africa, the group names that claim the attacks are mapped.
+
+
+#Data frame: Number of Claimed Attacks by Terrorist Group in Violent Regions (since 2009)
+ds.high.terror.attack.regions <- subset(ds.ready.1.sample, region_txt == c("Middle East & North Africa", "South Asia", "Sub-Saharan Africa"))
+ds.high.terror.attack.regions <- subset(ds.high.terror.attack.regions, iyear > 2009)
+ds.high.terror.attack.regions <- ds.high.terror.attack.regions[!(ds.high.terror.attack.regions$gname=="Unknown"),]
+ds.high.terror.attack.regions <- ds.high.terror.attack.regions %>% group_by(gname) %>% filter(n() > 5)
+
+#Figure: Number of Claimed Attacks by Terrorist Group in Violent Regions (since 2009)
+ggplot(ds.high.terror.attack.regions, aes(x=gname)) +   
+  geom_bar(stat = "count") + 
+  labs(title = "Number of Claimed Attacks by Terrorist Groups Since 2009") +
+  xlab("Terror Group") +
+  ylab("Number of Claimed Attacks") +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5))
+
+
+##Overall thoughts on heatmap analysis: 
+#The amount of attacks, success of the attacks and number of people affected (killed and wounded) varies greatly depending on the region and year. Therefore, it is likely that the region and year will be important features in the clustering and prediction process.
+```
+
+## Terrorist Group Rankings
+```{r}
+#Data frame: Total Attacks, Successful Attacks & Deaths Terrorist Group Ranking
+ds.group <- aggregate(cbind(total, success, nkill) ~ gname,data = ds.ready.1.sample.temp, sum)
+ds.group$success_perct <- ds.group$success/ ds.group$total
+ds.group.attacks.successful.1 <- ds.group[order(ds.group$total,decreasing=T)[1:21],] 
+ds.group.attacks.successful.1 <- ds.group.attacks.successful.1[!(ds.group.attacks.successful.1$gname=="Unknown"),]
+ds.group.attacks.successful.2 <- as.data.frame(rep(ds.group.attacks.successful.1$gname, times = 2))
+names(ds.group.attacks.successful.2) <- "gname"
+ds.group.attacks.successful.2$type <- c(rep("Total", times = 20), 
+                         rep("Successful Attacks", times = 20))
+ds.group.attacks.successful.2$value <- c(ds.group.attacks.successful.1$total, ds.group.attacks.successful.1$success)
+ds.group.killed <- ds.group[order(ds.group$nkill,decreasing=T)[1:21],] 
+ds.group.killed <- ds.group.killed[!(ds.group.killed$gname=="Unknown"),]
+ds.group.killed$gname <- revalue(ds.group.killed$gname, c("National Union for the Total Independence of Angola (UNITA)"="NU for the Total Independence of Angola"))
+
+
+#Figure: Terrorist Groups with Most Attacks & Their Successful Attacks
+ggplot(ds.group.attacks.successful.2) + 
+  geom_bar(aes(x=reorder(gname, value), y= value, fill = type), stat = "identity", position = "dodge") + 
+  coord_flip() +
+  labs(title = "Terrorist Groups With the Most Attacks") +
+  xlab("Regions") +
+  ylab("Total Number") 
+
+#Figure: Terrorist Groups with Most Deaths
+ggplot(ds.group.killed) + 
+  geom_bar(aes(x=reorder(gname,nkill), y=nkill), stat = "identity", position = "dodge") + 
+  coord_flip() +
+  labs(title = "Terrorist Groups with Most Deaths") +
+  xlab("Group") +
+  ylab("Number of Deaths") +
+  scale_y_continuous(limits = c(0, 1200), breaks = seq(from = 0, to = 1200, by = 100))
+```
+
+
+## Terrorist Weapon Trends
+```{r}
+#Data frame: Distribution of Frequently Used Weapons
+ds.weaptype.distribution <- aggregate(total ~ weaptype1_txt, data = ds.ready.1.sample.temp, sum)
+ds.weaptype.distribution$perct <- ds.weaptype.distribution$total / sum(ds.weaptype.distribution$total)
+ds.weaptype.distribution <- subset(ds.weaptype.distribution, perct > 0.01)
+ds.weaptype.distribution %>% arrange(desc(total)) %>% mutate(prop = percent(total / sum(total))) -> ds.weaptype.distribution
+
+#Figure: Distribution of Frequently Used Weapons
+par(mar=c(4, 4, 4, 4), 
+    mgp=c(1, 1, 0), 
+    las=0)
+ggplot(ds.weaptype.distribution, aes(x=factor(1), y=perct, fill= fct_inorder(weaptype1_txt))) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  theme_void() + 
+  geom_label_repel(aes(label = prop), size=5, show.legend = F, nudge_x = 0.04) +
+  guides(fill = guide_legend(title = "Weapon")) + 
+  labs(title = "Distribution of Frequently Used Weapons")
+
+#Data frame: Success & Deaths by Weapon Type
+ds.weaptype <- ds.ready.1.sample.temp
+ds.weaptype$weaptype1_txt <- revalue(ds.weaptype$weaptype1_txt, c("Vehicle (not to include vehicle-borne explosives, i.e., car or truck bombs)"="Vehicle (non-explosive)"))
+names(ds.weaptype)[names(ds.weaptype) == 'weaptype1_txt'] <- "Weapon"
+
+#Figure: Total Attacks by Weapon Type
+ggplot(ds.weaptype,aes(x = iyear,
+                             y = total,
+                             fill = Weapon)) + 
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("#9e0142", "#d53e4f", "#f46d43", "#fdae61", "#fee08b", "#ffffbf", "#e6f598", "#abdda4", "#66c2a5", "#3288bd", "#5e4fa2")) + 
+  labs(title = "Total Attacks by Weapon Type") +
+  xlab("Year") +
+  ylab("Percent") +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 0, to = 2016, by = 5))
+
+#Figure: Success by Weapon Type
+ggplot(ds.weaptype,aes(x = iyear,
+                             y = success,
+                             fill = Weapon)) + 
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("#9e0142", "#d53e4f", "#f46d43", "#fdae61", "#fee08b", "#ffffbf", "#e6f598", "#abdda4", "#66c2a5", "#3288bd", "#5e4fa2")) + 
+  labs(title = "Successful Attacks by Weapon Type") +
+  xlab("Year") +
+  ylab("Percent") +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 0, to = 2016, by = 5))
+
+#Figure: Deaths by Weapon Type
+ggplot(ds.weaptype,aes(x = iyear,
+                             y = nkill,
+                             fill = Weapon)) + 
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("#9e0142", "#d53e4f", "#f46d43", "#fdae61", "#fee08b", "#ffffbf", "#e6f598", "#abdda4", "#66c2a5", "#3288bd", "#5e4fa2")) + 
+  labs(title = "Deaths by Weapon Type") +
+  xlab("Year") +
+  ylab("Percent People Killed") +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 0, to = 2016, by = 5))
+#While the most fatalities were from fierarms in the early years of the dataset, explosives have taken over since 1978 causing on average 50% of the deaths since 2005. This also explains the spike in deaths per attack in 1978 onwards and the sustained/increasing ratio of deaths per attack.
+```
+
+## Terrorist Attack Type Trends
+```{r}
+#Data frame: Attack Type Trends
+ds.attacktype <- ds.ready.1.sample.temp
+names(ds.attacktype)[names(ds.attacktype) == 'attacktype1_txt'] <- "Type"
+
+#Figure: Total Attacks by Type
+ggplot(ds.attacktype,aes(x = iyear,
+                             y = total,
+                             fill = Type)) + 
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("#9e0142", "#d53e4f", "#fdae61", "#fee08b", "#ffffbf", "#e6f598", "#abdda4", "#66c2a5", "#3288bd", "#5e4fa2")) + 
+  labs(title = "Total Attacks by Type") +
+  xlab("Year") +
+  ylab("Percent") +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 0, to = 2016, by = 5))
+
+#Figure: Successful Attacks by Type
+ggplot(ds.attacktype,aes(x = iyear,
+                             y = success,
+                             fill = Type)) + 
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("#9e0142", "#d53e4f", "#fdae61", "#fee08b", "#ffffbf", "#e6f598", "#abdda4", "#66c2a5", "#3288bd", "#5e4fa2")) + 
+  labs(title = "Successful Attacks by Type") +
+  xlab("Year") +
+  ylab("Percent") +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 0, to = 2016, by = 5))
+
+
+#Figure: Deaths by Attack Type
+ggplot(ds.attacktype,aes(x = iyear,
+                             y = nkill,
+                             fill = Type)) + 
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("#9e0142", "#d53e4f", "#fdae61", "#fee08b", "#ffffbf", "#e6f598", "#abdda4", "#66c2a5", "#3288bd", "#5e4fa2")) + 
+  labs(title = "Deaths by Attack Type") +
+  xlab("Year") +
+  ylab("Percent People Killed") +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 0, to = 2016, by = 5))
+#Armed assault and assassinations were the predominant method of terrorist attacks in the early years of the data set; as seen in the previous graph the number of bombings increased dramatically since the 80s, while assassinations and armed assaults decreased.
+```
+
+## Target Trends
+```{r}
+#Data frame: Target Trends
+ds.targettype <- ds.ready.1.sample.temp
+ds.targettype <- transform(ds.targettype,
+          targtype1_txt=revalue(targtype1_txt,
+                                c("Government (Diplomatic)"="Government", "Government (General)" = "Government")))
+names(ds.targettype)[names(ds.targettype) == 'targtype1_txt'] <- "Target"
+
+#Figure: Total Attacks by Target Type
+ggplot(ds.targettype,aes(x = iyear,
+                             y = total,
+                             fill = Target)) + 
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("#771155", "#AA4488", "#CC99BB", "#114477", "#4477AA", "#77AADD", "#117777", "#44AAAA", "#77CCCC", "#117744", "#44AA77", "#88CCAA", "#777711", "#AAAA44", "#DDDD77", "#774411", "#AA7744", "#DDAA77", "#771122", "#AA4455", "#DD7788")) +
+  labs(title = "Total Attacks by Target Type") +
+  xlab("Year") +
+  ylab("% People Killed") +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 0, to = 2016, by = 5))
+
+#Figure: Successful Attacks by Target Type
+ggplot(ds.targettype,aes(x = iyear,
+                             y = success,
+                             fill = Target)) + 
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("#771155", "#AA4488", "#CC99BB", "#114477", "#4477AA", "#77AADD", "#117777", "#44AAAA", "#77CCCC", "#117744", "#44AA77", "#88CCAA", "#777711", "#AAAA44", "#DDDD77", "#774411", "#AA7744", "#DDAA77", "#771122", "#AA4455", "#DD7788")) +
+  labs(title = "Successful Attacks by Target Type") +
+  xlab("Year") +
+  ylab("% People Killed") +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 0, to = 2016, by = 5))
+
+#Figure: Deaths by Target Type
+ggplot(ds.targettype,aes(x = iyear,
+                             y = nkill,
+                             fill = Target)) + 
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("#771155", "#AA4488", "#CC99BB", "#114477", "#4477AA", "#77AADD", "#117777", "#44AAAA", "#77CCCC", "#117744", "#44AA77", "#88CCAA", "#777711", "#AAAA44", "#DDDD77", "#774411", "#AA7744", "#DDAA77", "#771122", "#AA4455", "#DD7788")) +
+  labs(title = "Deaths by Target Type") +
+  xlab("Year") +
+  ylab("% People Killed") +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 0, to = 2016, by = 5))
+#As aready expected from previous charts, the increase in bombings lead also to a shift of target types: private citizens and property became the major target type.
+```
+
+## Internationality Trend of Terrorism 
+```{r}
+#Data frame: Logistic-International, Ideological-International, Indeterminant-International, Any-International Attacks
+ds.international.attacks.1 <- ds.ready.1.sample.temp
+ds.international.attacks.1$INT_LOG <- as.numeric(ds.international.attacks.1$INT_LOG)
+ds.international.attacks.1$INT_IDEO <- as.numeric(ds.international.attacks.1$INT_IDEO)
+ds.international.attacks.1$INT_MISC <- as.numeric(ds.international.attacks.1$INT_MISC)
+ds.international.attacks.1$INT_ANY <- as.numeric(ds.international.attacks.1$INT_ANY)
+ds.international.attacks.1 <-  na.omit(ds.international.attacks.1)
+ds.international.attacks.2 <- aggregate(cbind(total, INT_LOG, INT_IDEO, INT_MISC, INT_ANY) ~ iyear, ds.international.attacks.1,sum)
+ds.international.attacks.2$INT_LOG <- ds.international.attacks.2$INT_LOG / ds.international.attacks.2$total
+ds.international.attacks.2$INT_IDEO <- ds.international.attacks.2$INT_IDEO / ds.international.attacks.2$total
+ds.international.attacks.2$INT_MISC <- ds.international.attacks.2$INT_MISC / ds.international.attacks.2$total
+ds.international.attacks.2$INT_ANY <- ds.international.attacks.2$INT_ANY / ds.international.attacks.2$total
+
+#Figure: Logistic-International, Ideological-International, Indeterminant-International, Any-International Attacks
+ggplot(data = ds.international.attacks.2, aes(x=iyear)) + 
+  geom_line(aes(y=INT_LOG, colour = "Logistically International"), size = 1) +
+  geom_line(aes(y=INT_IDEO, colour = "Ideologically International"), size = 1) +
+  geom_line(aes(y=INT_MISC, colour = "Indeterminantely International"), size = 1) +
+  geom_line(aes(y=INT_ANY, colour = "Any International"), size = 1) +
+  labs(title= "Internationality Trends of Attacks") +
+  xlab("Year") +
+  ylab("Percent") + 
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(limits = c(1970, 2016), breaks = seq(from = 1970, to = 2016, by = 2)) + 
+  scale_y_continuous(labels = percent_format())
+
+```
+
+## Cleaning the Global Environment 
+```{r}
+#cleaning global environment
+rm(col.breaks1, col.breaks2, col.breaks3, col.breaks4, col.breaks5, my.palette1, my.palette2, my.palette3, my.palette4, my.palette5, mat.affected.region.p.a., mat.killed.region.p.a., mat.successful.region.p.a., mat.total.region.p.a., mat.wounded.region.p.a., ds.international.attacks.1, ds.international.attacks.2, my.palette, ds.affected.p.a., ds.attacktype, ds.group, ds.group.killed, ds.group.attacks.successful.1, ds.group.attacks.successful.2, ds.high.terror.attack.regions, ds.killed.p.a., ds.killed.region.p.a., ds.killed.wounded.attack.ratio, ds.killed.wounded.without.outliers, ds.ready.1.sample.temp, ds.region.prct, ds.successful.p.a., ds.successful.region.p.a., ds.successfulness.perct, ds.targettype, ds.total.p.a., ds.total.region.p.a., ds.total.success.killed.region, ds.unsuccessful.p.a., ds.weaptype, ds.weaptype.distribution, ds.wounded.killed.ratio, ds.wounded.p.a.)
+```
+
+## Reducing the number of levels to eliminate singularities
+
+```{r}
+ds.ready.2<-ds.ready.1
+
+    # rename success column to success/failure instead of 0-1
+  ds.ready.2$success[ds.ready.2$success==1]="successful"
+  ds.ready.2$success[ds.ready.2$success==0]= "failed"
+  
+  
+  #Convert everything apart from numeric to factors
+  sapply(ds.ready.2,class) #inspect class of variables
+  convert <- c(5:22, 25:30) #columns of data that should be factors
+  ds.ready.2[,convert] <- data.frame(apply(ds.ready.2[convert], 2, as.factor))
+  sapply(ds.ready.2,class) #inspect class of variables
+  
+  
+  
+  #Check the levels of "country_txt"
+    nlevels(ds.ready.2$country_txt)
+    y1<-rep(0,nlevels(ds.ready.2$country_txt))
+    x1<-y1
+    i=1
+      for(c in levels(ds.ready.2$country_txt)){
+        y1[i]=c
+        x1[i]= sum(ds.ready.2$country_txt==c)
+        i=i+1
+      }
+    d1 <-data.frame(y1,x1)
+    d1$x1<- as.numeric(as.character(d1$x1))
+    d1<-d1[order(d1$x1,decreasing = T),]
+    rownames(d1)<-c(1:nrow(d1))
+    
+  # By grouping the countries with <=200  incidents to 'Other' we can reduce the number of levels to ~50
+    
+    for(c in levels(ds.ready.2$country_txt)){
+      if(sum(ds.ready.2$country_txt==c)<=200){
+        ds.ready.2$country_txt<-as.character(ds.ready.2$country_txt)
+        ds.ready.2$country_txt[ds.ready.2$country_txt==c]<-'Other'
+        ds.ready.2$country_txt<-as.factor(ds.ready.2$country_txt)
+      }
+    }
+      
+    nlevels(ds.ready.2$country_txt)
+    rm(c,i,d1,x1,y1)
+    
+    #Check the levels of "natlty1_txt"
+    nlevels(ds.ready.2$natlty1_txt)
+    y1<-rep(0,nlevels(ds.ready.2$natlty1_txt))
+    x1<-y1
+    i=1
+    for(c in levels(ds.ready.2$natlty1_txt)){
+      y1[i]=c
+      x1[i]= sum(ds.ready.2$natlty1_txt==c)
+      i=i+1
+    }
+    d1 <-data.frame(y1,x1)
+    d1$x1<- as.numeric(as.character(d1$x1))
+    d1<-d1[order(d1$x1,decreasing = T),]
+    rownames(d1)<-c(1:nrow(d1))
+    
+    # By grouping the nationality of with <=230  incidents to 'Other' we can reduce the number of levels significantly
+    
+    
+    for(c in levels(ds.ready.2$natlty1_txt)){
+      if(sum(ds.ready.2$natlty1_txt==c)<=230){
+        ds.ready.2$natlty1_txt<-as.character(ds.ready.2$natlty1_txt)
+        ds.ready.2$natlty1_txt[ds.ready.2$natlty1_txt==c]<-'Other'
+        ds.ready.2$natlty1_txt<-as.factor(ds.ready.2$natlty1_txt)
+      }
+    }
+    
+    nlevels(ds.ready.2$natlty1_txt)
+    rm(c,i,d1,x1,y1)
+    
+    #Check the levels of "targsubtype1_txt"
+    nlevels(ds.ready.2$targsubtype1_txt)
+    y1<-rep(0,nlevels(ds.ready.2$targsubtype1_txt))
+    x1<-y1
+    i=1
+    for(c in levels(ds.ready.2$targsubtype1_txt)){
+      y1[i]=c
+      x1[i]= sum(ds.ready.2$targsubtype1_txt==c)
+      i=i+1
+    }
+    d1 <-data.frame(y1,x1)
+    d1$x1<- as.numeric(as.character(d1$x1))
+    d1<-d1[order(d1$x1,decreasing = T),]
+    rownames(d1)<-c(1:nrow(d1))
+    
+    # By grouping the target subtypes with <=480  incidents to 'Other' we can reduce the number of levels a lot
+    
+    for(c in levels(ds.ready.2$targsubtype1_txt)){
+      if(sum(ds.ready.2$targsubtype1_txt==c)<480){
+        ds.ready.2$targsubtype1_txt<-as.character(ds.ready.2$targsubtype1_txt)
+        ds.ready.2$targsubtype1_txt[ds.ready.2$targsubtype1_txt==c]<-'Other'
+        ds.ready.2$targsubtype1_txt<-as.factor(ds.ready.2$targsubtype1_txt)
+      }
+    }
+    
+    nlevels(ds.ready.2$targsubtype1_txt)
+    rm(c,i,d1,x1,y1)
+    
+    
+    #Check the levels of "gname"
+    nlevels(ds.ready.2$gname)
+    y1<-rep(0,nlevels(ds.ready.2$gname))
+    x1<-y1
+    i=1
+    for(c in levels(ds.ready.2$gname)){
+      y1[i]=c
+      x1[i]= sum(ds.ready.2$gname==c)
+      i=i+1
+    }
+    d1 <-data.frame(y1,x1)
+    d1$x1<- as.numeric(as.character(d1$x1))
+    d1<-d1[order(d1$x1,decreasing = T),]
+    rownames(d1)<-c(1:nrow(d1))
+    
+    # By grouping the group names with <160  incidents to 'Other' we can reduce the number of levels a lot
+    
+    for(c in levels(ds.ready.2$gname)){
+      if(sum(ds.ready.2$gname==c)<160){
+        ds.ready.2$gname<-as.character(ds.ready.2$gname)
+        ds.ready.2$gname[ds.ready.2$gname==c]<-'Other'
+        ds.ready.2$gname<-as.factor(ds.ready.2$gname)
+      }
+    }
+    
+    nlevels(ds.ready.2$gname)
+    
+    rm(c,i,d1,x1,y1)
+    
+    #substitute 1==2 with 1==1 to run the following chunk
+  if(1==2){
+  # Create a dummy variable matrix
+  dmy<-dummyVars("~ .", data=ds.ready.2)
+  dummy.ds.ready.2<-data.frame(predict(dmy,newdata = ds.ready.2))
+  }
+    
+    #substitute 1==2 with 1==1 to run the following chunk
+    if(1==2){
+  # Adjusting feature level names so caret can read them 
+  feature.names=names(ds.ready.2)
+  for (f in feature.names) {
+    if (class(ds.ready.2[[f]])=="factor") {
+      levels <- unique(c(ds.ready.2[[f]]))
+      ds.ready.2[[f]] <- factor(ds.ready.2[[f]],labels=make.names(levels))
+    }
+  }
+  rm(feature.names,f,levels)}
+```
+
+
+
+## Reducing the number of fails in the raw sample (Oversampling)
+```{r}
+
+ds.ready.3<-ds.ready.2
+
+sum(ds.ready.3$success)/nrow(ds.ready.3)         #percentage of successes in the sample
+n.success<- sum(ds.ready.3$success)              #number of successes
+1-sum(ds.ready.3$success)/nrow(ds.ready.3)       #percentage of fails
+n.fail<-nrow(ds.ready.3) - n.success             #number of fails
+success.rows<-(which(ds.ready.3$success==1))     #vector of success rows
+fail.rows<-(which(ds.ready.3$success==0))        #vector of fail rows
+
+#create a sample containing 5 times the number of successes
+samp<-sample(success.rows,5*n.fail, replace=FALSE)
+samp<-c(samp,fail.rows)
+samp<-sample(samp,length(samp),replace=FALSE) #shuffle
+ds.ready.3<-ds.ready.3[samp,]
+rownames(ds.ready.3)<-c(1:length(samp))
+
+```
+
